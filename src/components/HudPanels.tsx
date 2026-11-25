@@ -18,7 +18,6 @@ import {
   ZoomIn,
   HelpCircle,
   AlertTriangle,
-  Sparkles,
   TrainFront,
   Scale,
 } from 'lucide-react';
@@ -119,7 +118,6 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
   const cAmmo = getItemCount(world, 'ammo');
   const cRails = getItemCount(world, 'rails');
   const cCoupler = getItemCount(world, 'coupler') + getItemCount(world, 'crudeCoupler');
-  const cMagic = getItemCount(world, 'magicShard');
   const cRelic = getItemCount(world, 'ancientRelic');
   const chestCount = getAllChestGrids(world).length;
   const bagUsed = getGridUsedCells(world.backpack);
@@ -206,7 +204,7 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
           <div className="brass-panel rounded-xl p-3 space-y-2">
             <VitalBar
               icon={<Flame className="w-3.5 h-3.5 text-orange-400" />}
-              label="锅炉"
+              label="魔核"
               pct={(world.boilerFuel / world.boilerMax) * 100}
               valueText={`${world.boilerFuel.toFixed(1)}/${world.boilerMax}`}
               barClass="bg-gradient-to-r from-orange-600 via-amber-500 to-yellow-300"
@@ -319,8 +317,8 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
                 <div className="text-[11px] text-stone-300/90 mt-0.5">
                   {selRoute ? (
                     <>
-                      已选下站：<b className="text-amber-200">{selRoute.stationName}</b> ({selRoute.distance}m · 常速约耗油{' '}
-                      <b className={totalFuelNow < estCruise ? 'text-red-400' : 'text-emerald-300'}>~{estCruise}</b>，现存总油{' '}
+                      已选下站：<b className="text-amber-200">{selRoute.stationName}</b> ({selRoute.distance}m · 常速约耗晶{' '}
+                      <b className={totalFuelNow < estCruise ? 'text-red-400' : 'text-emerald-300'}>~{estCruise}</b>，现存总晶{' '}
                       <span className="font-mono">{totalFuelNow}</span>)
                     </>
                   ) : (
@@ -341,7 +339,7 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
                     ? '⚠ 荒野停车极危！请速修断轨并拉杆发车'
                     : world.stationStreamed
                       ? '前方站台已进入视野 · 列车将平稳减速进站停靠'
-                      : '行驶中：作物照长 · 熔炉照烧 · 全速更快但油耗大增'}
+                      : '行驶中：作物照长 · 熔炉照炼 · 全速更快但魔晶消耗大增'}
                 </div>
               </div>
             )}
@@ -355,7 +353,7 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
             title="已自动合并统计背包与车上所有储物箱物资"
           >
             {[
-              { icon: '⛽', label: '油', val: cFuel, warn: cFuel <= 2 },
+              { icon: '🔮', label: '晶', val: cFuel, warn: cFuel <= 2 },
               { icon: '🪵', label: '木', val: cWood },
               { icon: '⚙', label: '废', val: cScrap },
               { icon: '🔩', label: '零', val: cParts },
@@ -377,11 +375,6 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
                 <span>{item.val}</span>
               </span>
             ))}
-            {cMagic > 0 && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono bg-purple-950/70 border border-purple-400/60 text-purple-200">
-                <Sparkles className="w-3 h-3" /> {cMagic}
-              </span>
-            )}
             {cRelic > 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono bg-amber-950/70 border border-amber-400/70 text-amber-200">
                 🏺 {cRelic}
@@ -513,7 +506,7 @@ export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }
               <span className={`font-mono ${nextWeightIfPlaced > traction ? 'text-red-400 font-bold' : 'text-emerald-300'}`}>
                 放置后载重 {nextWeightIfPlaced}/{traction}t{nextWeightIfPlaced > traction ? ' (超载!)' : ''}
               </span>
-              <span className="text-stone-400">左键建造 · 右键拆除返料</span>
+              <span className="text-stone-400">车厢 5×4 · 车头 4×4（锅炉/驾驶台/提灯不可盖）· 左键建造 · 右键拆除</span>
             </div>
           </div>
         )}

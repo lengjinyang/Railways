@@ -10,13 +10,16 @@ import {
   ITEM_META,
   LANTERN_HOOK_X,
   LANTERN_HOOK_Y,
+  LOCO_COLS,
   LOCO_W,
   TILE,
   canAffordCost,
   getCarBounds,
   getHullSegment,
   getTileCenter,
+  getTrainBuildingLists,
   isHullPassage,
+  isLocoCoreTile,
   playerHasActiveLantern,
   worldToTrainTile,
   type HullPanel,
@@ -38,7 +41,7 @@ const PICKUP_COLORS: Record<string, string> = {
   wood: '#b07d4f',
   scrap: '#a3b1bf',
   parts: '#ffd56b',
-  fuel: '#ff7b29',
+  fuel: '#c77dff',
   water: '#4dabf7',
   rawFood: '#94d82d',
   cookedFood: '#fcc419',
@@ -49,7 +52,6 @@ const PICKUP_COLORS: Record<string, string> = {
   carapace: '#da77f2',
   coupler: '#66d9e8',
   crudeCoupler: '#ffa94d',
-  magicShard: '#c77dff',
   arcanePotion: '#e0aaff',
   ancientRelic: '#ffd43b',
 };
@@ -1077,9 +1079,54 @@ export class Renderer2D {
       this.drawHullPanels(ctx, w, i, car.hull);
     }
 
-    // 2. Locomotive + Hull
+    // 2. Locomotive deck, build grid, placed buildings, then hull
     drawLocomotiveArt(ctx, w, this.patterns.locoDeck);
+    this.drawLocoBuildGrid(ctx, w);
+    for (const bld of w.locoBuildings) {
+      const tc = getTileCenter(bld.carIdx, bld.col, bld.row);
+      ctx.save();
+      ctx.translate(tc.x, tc.y);
+      drawBuildingArt(ctx, w, bld);
+      ctx.restore();
+    }
     this.drawHullPanels(ctx, w, -1, w.locoHull);
+  }
+
+  /** 4×4 locomotive grid. Core tiles (boiler, throttle, lantern) are marked unbuildable. */
+  private drawLocoBuildGrid(ctx: CanvasRenderingContext2D, w: WorldState): void {
+    if (!(w.buildMode || w.hotbar === 5)) return;
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = 'rgba(255, 220, 120, 0.42)';
+    for (let c = 1; c < LOCO_COLS; c++) {
+      ctx.beginPath();
+      ctx.moveTo(c * TILE, -HALF_H);
+      ctx.lineTo(c * TILE, HALF_H);
+      ctx.stroke();
+    }
+    for (let r = 1; r < CAR_ROWS; r++) {
+      ctx.beginPath();
+      ctx.moveTo(0, -HALF_H + r * TILE);
+      ctx.lineTo(LOCO_W, -HALF_H + r * TILE);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255, 140, 140, 0.7)';
+    for (let col = 0; col < LOCO_COLS; col++) {
+      for (let row = 0; row < CAR_ROWS; row++) {
+        if (!isLocoCoreTile(col, row)) continue;
+        const x = col * TILE;
+        const y = -HALF_H + row * TILE;
+        ctx.fillStyle = 'rgba(90, 36, 48, 0.28)';
+        ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+        ctx.beginPath();
+        ctx.moveTo(x + 10, y + 10);
+        ctx.lineTo(x + TILE - 10, y + TILE - 10);
+        ctx.moveTo(x + TILE - 10, y + 10);
+        ctx.lineTo(x + 10, y + TILE - 10);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   private drawBuildGhost(ctx: CanvasRenderingContext2D, w: WorldState, wx: number, wy: number): void {
@@ -1103,8 +1150,10 @@ export class Renderer2D {
 
     const tile = worldToTrainTile(w, wx, wy);
     if (!tile) return;
-    const occupied = w.flatbeds[tile.carIdx].buildings.some((b) => b.col === tile.col && b.row === tile.row);
-    const ok = afford && !occupied;
+    const host = tile.carIdx < 0 ? w.locoBuildings : w.flatbeds[tile.carIdx].buildings;
+    const blockedCore = tile.carIdx < 0 && isLocoCoreTile(tile.col, tile.row);
+    const occupied = host.some((b) => b.col === tile.col && b.row === tile.row);
+    const ok = afford && !occupied && !blockedCore;
     const c = getTileCenter(tile.carIdx, tile.col, tile.row);
 
     ctx.fillStyle = ok ? 'rgba(89, 201, 115, 0.34)' : 'rgba(255, 82, 82, 0.34)';
@@ -1197,8 +1246,8 @@ export class Renderer2D {
       punchRadial(88, 0, 66, 0.58);
     }
 
-    for (const car of w.flatbeds) {
-      for (const b of car.buildings) {
+    for (const deck of getTrainBuildingLists(w)) {
+      for (const b of deck) {
         if (b.type === 'campfire' || b.type === 'lantern') {
           const tc = getTileCenter(b.carIdx, b.col, b.row);
           punchRadial(tc.x, tc.y, b.type === 'campfire' ? 136 : 120, 0.94);

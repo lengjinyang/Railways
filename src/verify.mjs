@@ -287,7 +287,127 @@ try {
   wLife.dayCount++;
   assert.equal(m.restInBed(wLife), null, 'Bed rest refreshes on the next day');
 
-  console.log('ALL V6 CHECKS PASSED: unbounded Lost World stations, disembarkation ceremony, POE2 spatial grid backpack + rotation + upgrades, seamless transitions, rail zones I-V, lantern darkness threat, tool gates.');
+  // 8. Fuel is a single 魔晶 resource (old 秘法晶石 merged in; no second crystal item)
+  const recipes = await server.ssrLoadModule('/src/recipes_v2.ts');
+  assert.equal(invMod.ITEM_META.fuel.name, '魔晶');
+  assert.equal(invMod.ITEM_META.fuel.short, '魔晶');
+  assert.equal(invMod.ITEM_META.fuel.icon, '🔮');
+  assert.equal(invMod.ITEM_META.fuel.w, 1);
+  assert.equal(invMod.ITEM_META.fuel.h, 2, '魔晶 keeps the old fuel footprint so inventory layout stays equivalent');
+  assert.equal(invMod.ITEM_META.magicShard, undefined, 'Separate 秘法晶石 item is gone');
+  assert.equal(invMod.BACKPACK_TIERS[4].cost.fuel, 3);
+  assert.equal(invMod.BACKPACK_TIERS[4].cost.magicShard, undefined);
+  const bio = recipes.CRAFT_RECIPES.find((r) => r.id === 'biofuel');
+  assert.ok(bio && bio.name.includes('魔晶') && bio.output.fuel === 2, 'Wood still refines into the same amount of crystal fuel');
+  assert.equal(recipes.CRAFT_RECIPES.find((r) => r.id === 'arcane_fuel'), undefined, 'Crystal-to-fuel conversion removed after unification');
+  assert.equal(recipes.CRAFT_RECIPES.find((r) => r.id === 'arcane_potion').cost.fuel, 2);
+  assert.ok(
+    recipes.CRAFT_RECIPES.every(
+      (r) => !Object.prototype.hasOwnProperty.call(r.cost, 'magicShard') && !Object.prototype.hasOwnProperty.call(r.output, 'magicShard')
+    )
+  );
+  const clusters = w.props.filter((p) => p.kind === 'crystal_cluster');
+  assert.ok(clusters.length >= 3, `Stations expose crystal clusters instead of fuel barrels, got ${clusters.length}`);
+  assert.ok(clusters.every((p) => p.label.includes('魔晶')), 'Crystal cluster labels say 魔晶');
+  assert.ok(!w.props.some((p) => /油|煤/.test(p.label)), 'No oil or coal labels remain on world props');
+  assert.ok(w.props.every((p) => !p.drops || p.drops.magicShard == null), 'Drops never use the removed magicShard key');
+
+  const wQuest = m.createInitialWorld();
+  m.giveItem(wQuest, 'wood', 12);
+  m.giveItem(wQuest, 'scrap', 12);
+  wQuest.player.x = m.getTileCenter(0, 3, 2).x;
+  wQuest.player.y = m.getTileCenter(0, 3, 2).y;
+  wQuest.buildMode = true;
+  wQuest.selectedBuild = 'workbench';
+  assert.equal(m.tryPlaceBuilding(wQuest, m.getTileCenter(0, 1, 1).x, m.getTileCenter(0, 1, 1).y), null);
+  wQuest.selectedBuild = 'chest';
+  assert.equal(m.tryPlaceBuilding(wQuest, m.getTileCenter(0, 2, 1).x, m.getTileCenter(0, 2, 1).y), null);
+  m.stepWorld(wQuest, idleInput, 0.05);
+  m.stepWorld(wQuest, idleInput, 0.05);
+  const q3 = m.getActiveQuest(wQuest);
+  assert.ok(q3 && q3.title.includes('魔晶') && q3.desc.includes('魔晶'), `Quest 3 should talk about 魔晶, got ${q3 && q3.title}`);
+  assert.ok(!/油桶|添煤|燃料|木炭/.test(`${q3.title}${q3.desc}`));
+
+  // 9. Locomotive deck is a 4×4 grid: 8 buildable cells, core tiles blocked, weight, combat, removal, smelting
+  assert.equal(m.LOCO_COLS, 4);
+  assert.equal(m.LOCO_ROWS, 4);
+  assert.equal(m.LOCO_BUILDABLE_CELLS, 8, '4×4 deck keeps 8 cells free of boiler, throttle, and lantern');
+  let reserved = 0;
+  for (let col = 0; col < m.LOCO_COLS; col++) {
+    for (let row = 0; row < m.LOCO_ROWS; row++) if (m.isLocoCoreTile(col, row)) reserved++;
+  }
+  assert.equal(reserved, 8);
+  assert.equal(m.isLocoCoreTile(1, 1), true, 'Boiler cell is reserved');
+  assert.equal(m.isLocoCoreTile(3, 1), true, 'Throttle cell is reserved');
+  assert.equal(m.isLocoCoreTile(3, 2), true, 'Lower throttle cell is reserved');
+  assert.equal(m.isLocoCoreTile(0, 3), true, 'Lantern hook cell is reserved');
+  assert.equal(m.isLocoCoreTile(0, 0), false);
+  assert.equal(m.isLocoCoreTile(2, 0), false);
+  assert.equal(m.isLocoCoreTile(1, 2), false);
+  assert.equal(m.isLocoCoreTile(3, 3), false);
+
+  const wLoco = m.createInitialWorld();
+  const weight0 = m.getTrainWeight(wLoco);
+  m.giveItem(wLoco, 'wood', 20);
+  m.giveItem(wLoco, 'scrap', 30);
+  m.giveItem(wLoco, 'parts', 4);
+  wLoco.player.x = -80;
+  wLoco.player.y = 0;
+  wLoco.buildMode = true;
+  wLoco.selectedBuild = 'wood_wall';
+  const core = m.getTileCenter(-1, 1, 1);
+  assert.ok(m.tryPlaceBuilding(wLoco, core.x, core.y), 'Boiler tile rejects placement');
+  const drive = m.getTileCenter(-1, 3, 1);
+  assert.ok(m.tryPlaceBuilding(wLoco, drive.x, drive.y), 'Throttle tile rejects placement');
+  const lamp = m.getTileCenter(-1, 0, 3);
+  assert.ok(m.tryPlaceBuilding(wLoco, lamp.x, lamp.y), 'Lantern hook tile rejects placement');
+  assert.equal(wLoco.locoBuildings.length, 0, 'Rejected placements leave the locomotive empty');
+
+  const deck = m.getTileCenter(-1, 0, 0);
+  assert.equal(m.tryPlaceBuilding(wLoco, deck.x, deck.y), null, 'Open locomotive cell accepts a wall');
+  assert.equal(wLoco.locoBuildings.length, 1);
+  assert.equal(wLoco.locoBuildings[0].carIdx, -1);
+  assert.ok(
+    Math.abs(m.getTrainWeight(wLoco) - (weight0 + recipes.BUILDINGS.wood_wall.weight)) < 0.05,
+    'Locomotive buildings count toward traction weight'
+  );
+
+  wLoco.selectedBuild = 'workbench';
+  const wbL = m.getTileCenter(-1, 2, 0);
+  assert.equal(m.tryPlaceBuilding(wLoco, wbL.x, wbL.y), null);
+  assert.equal(m.hasWorkbench(wLoco), true, 'A workbench on the locomotive unlocks crafting');
+  wLoco.selectedBuild = 'chest';
+  const chestL = m.getTileCenter(-1, 3, 0);
+  assert.equal(m.tryPlaceBuilding(wLoco, chestL.x, chestL.y), null);
+  assert.equal(m.getAllChestGrids(wLoco).length, 1, 'A chest on the locomotive is live storage');
+
+  const wall = wLoco.locoBuildings.find((b) => b.type === 'wood_wall');
+  const hp0 = wall.hp;
+  wLoco.monsters = [m.createMonster('stalker', deck.x, deck.y, true, 1)];
+  wLoco.player.x = -200;
+  wLoco.player.y = 0;
+  for (let i = 0; i < 40; i++) m.stepWorld(wLoco, idleInput, 0.05);
+  const wallAfter = wLoco.locoBuildings.find((b) => b.uid === wall.uid);
+  assert.ok(wallAfter && wallAfter.hp < hp0, `Monster damages a locomotive building (${wallAfter && wallAfter.hp} from ${hp0})`);
+
+  wLoco.monsters = [];
+  const woodBefore = m.getItemCount(wLoco, 'wood');
+  assert.equal(m.tryRemoveBuilding(wLoco, wbL.x, wbL.y), true, 'Locomotive buildings can be removed');
+  assert.ok(m.getItemCount(wLoco, 'wood') > woodBefore, 'Removal refunds materials');
+  assert.equal(wLoco.locoBuildings.some((b) => b.type === 'workbench'), false);
+
+  wLoco.selectedBuild = 'campfire';
+  const fireL = m.getTileCenter(-1, 1, 2);
+  assert.equal(m.tryPlaceBuilding(wLoco, fireL.x, fireL.y), null, 'Campfire fits a non-core locomotive cell');
+  const furnaceL = wLoco.locoBuildings.find((b) => b.type === 'campfire');
+  furnaceL.smeltKind = 'charcoal';
+  furnaceL.smeltQueue = 1;
+  furnaceL.smeltProgress = 90;
+  const fuelBefore = m.getItemCount(wLoco, 'fuel');
+  for (let i = 0; i < 20; i++) m.stepWorld(wLoco, idleInput, 0.05);
+  assert.ok(m.getItemCount(wLoco, 'fuel') >= fuelBefore + 2, 'Furnace on the locomotive finishes a 魔晶 batch');
+
+  console.log('ALL V6 CHECKS PASSED: unbounded Lost World stations, disembarkation ceremony, POE2 spatial grid backpack + rotation + upgrades, seamless transitions, rail zones I-V, lantern darkness threat, tool gates, 魔晶 fuel, locomotive build grid.');
 } finally {
   await server.close();
 }

@@ -44,9 +44,29 @@ export const CAR_W = CAR_COLS * TILE; // 220
 export const CAR_H = CAR_ROWS * TILE; // 176
 export const COUPLER_GAP = 26;
 export const LOCO_COLS = 4;
+export const LOCO_ROWS = CAR_ROWS; // 4 — locomotive deck matches its 176×176 footprint
 export const LOCO_W = LOCO_COLS * TILE; // 176
-export const LOCO_H = CAR_H; // 176
+export const LOCO_H = LOCO_ROWS * TILE; // 176
 export const HALF_H = CAR_H / 2; // 88
+
+/**
+ * Locomotive cells reserved for core machinery. The deck is a 4×4 grid (16 cells);
+ * 8 stay buildable, 8 stay open so the boiler, throttle, and lantern hook keep working.
+ * Layout (row 0 is north / up):
+ *   [build] [boiler] [build] [build]
+ *   [boiler] [boiler] [drive] [drive]
+ *   [build] [build]  [drive] [drive]
+ *   [lamp]  [build]  [build] [build]
+ */
+export function isLocoCoreTile(col: number, row: number): boolean {
+  if (col === 1 && (row === 0 || row === 1)) return true;
+  if (col === 0 && row === 1) return true;
+  if ((col === 2 || col === 3) && (row === 1 || row === 2)) return true;
+  if (col === 0 && row === 3) return true;
+  return false;
+}
+
+export const LOCO_BUILDABLE_CELLS = LOCO_COLS * LOCO_ROWS - 8;
 export const DAY_LENGTH = 1200; // 20 min full day-night cycle (Minecraft-like!)
 export const CITY_ESCAPE_METERS = 180; // Slow escape out of the burning metropolis before Exile Lands!
 export const FIRST_LEG_METERS = 850;
@@ -155,7 +175,7 @@ export const ZONE_META: Record<
     icon: '✨',
     color: '#c77dff',
     bg: '#1c172b',
-    desc: '蕴藏魔法物品与秘法晶石，但里面的怪物更加强大',
+    desc: '蕴藏魔晶与魔力药剂，但里面的怪物更加强大',
   },
   old_city: {
     name: '旧城',
@@ -216,7 +236,7 @@ export interface WorldProp {
     | 'scrap_pile'
     | 'wood_crate'
     | 'dry_tree'
-    | 'fuel_barrel'
+    | 'crystal_cluster'
     | 'parts_box'
     | 'seed_cache'
     | 'scrap_car'
@@ -228,7 +248,7 @@ export interface WorldProp {
     | 'npc_keeper'
     | 'npc_gardener'
     | 'loco_crane';
-  mat?: 'wood' | 'metal' | 'barrel';
+  mat?: 'wood' | 'metal' | 'barrel' | 'crystal';
   x: number;
   y: number;
   r: number;
@@ -432,6 +452,8 @@ export interface WorldState {
   locoMaxHp: number;
   locoHull: HullPanel[];
   hasBumper: boolean;
+  /** Buildings placed on the locomotive deck (carIdx -1). Core tiles stay empty. */
+  locoBuildings: PlacedBuilding[];
   boilerFuel: number;
   boilerMax: number;
   totalFuelAdded: number;
@@ -518,12 +540,22 @@ export function getCarBounds(carIdx: number): { left: number; right: number; top
   return { left, right, top: -HALF_H, bottom: HALF_H };
 }
 
+export function getDeckBounds(carIdx: number): { left: number; right: number; top: number; bottom: number } {
+  if (carIdx < 0) return { left: 0, right: LOCO_W, top: -HALF_H, bottom: HALF_H };
+  return getCarBounds(carIdx);
+}
+
 export function getTileCenter(carIdx: number, col: number, row: number): { x: number; y: number } {
-  const b = getCarBounds(carIdx);
+  const b = getDeckBounds(carIdx);
   return {
     x: b.left + (col + 0.5) * TILE,
     y: b.top + (row + 0.5) * TILE,
   };
+}
+
+/** Locomotive deck first, then each flatbed. Lists are the live arrays. */
+export function getTrainBuildingLists(w: WorldState): PlacedBuilding[][] {
+  return [w.locoBuildings, ...w.flatbeds.map((c) => c.buildings)];
 }
 
 export function worldToTrainTile(
@@ -532,6 +564,13 @@ export function worldToTrainTile(
   wy: number
 ): { carIdx: number; col: number; row: number } | null {
   if (wy < -HALF_H || wy > HALF_H) return null;
+  if (wx >= 0 && wx < LOCO_W) {
+    const col = Math.floor(wx / TILE);
+    const row = Math.floor((wy + HALF_H) / TILE);
+    if (col >= 0 && col < LOCO_COLS && row >= 0 && row < LOCO_ROWS) {
+      return { carIdx: -1, col, row };
+    }
+  }
   for (let i = 0; i < w.flatbeds.length; i++) {
     const b = getCarBounds(i);
     if (wx >= b.left && wx < b.right) {
@@ -686,8 +725,8 @@ export function isCarSealed(w: WorldState, carIdx: number): boolean {
 // --- Inventory & Chest Unified Access (POE2 Spatial Grid System) ---
 export function getAllChestGrids(w: WorldState): GridInventory[] {
   const lists: GridInventory[] = [];
-  for (const car of w.flatbeds) {
-    for (const b of car.buildings) {
+  for (const deck of getTrainBuildingLists(w)) {
+    for (const b of deck) {
       if (b.type === 'chest' && b.chestGrid) lists.push(b.chestGrid);
     }
   }
@@ -946,6 +985,7 @@ export function depositAllToOpenChest(w: WorldState): void {
 // --- Train Stats & Helpers ---
 export function getTrainWeight(w: WorldState): number {
   let total = w.hasBumper ? BUILDINGS.bumper.weight : 0;
+  for (const b of w.locoBuildings) total += BUILDINGS[b.type].weight;
   for (const car of w.flatbeds) {
     total += car.baseWeight;
     for (const b of car.buildings) {
@@ -963,16 +1003,20 @@ export function isOverloaded(w: WorldState): boolean {
   return getTrainWeight(w) > getTractionLimit(w);
 }
 
+function anyTrainBuilding(w: WorldState, pred: (b: PlacedBuilding) => boolean): boolean {
+  return getTrainBuildingLists(w).some((deck) => deck.some(pred));
+}
+
 export function hasWorkbench(w: WorldState): boolean {
-  return w.flatbeds.some((c) => c.buildings.some((b) => b.type === 'workbench'));
+  return anyTrainBuilding(w, (b) => b.type === 'workbench');
 }
 
 export function hasChest(w: WorldState): boolean {
-  return w.flatbeds.some((c) => c.buildings.some((b) => b.type === 'chest'));
+  return anyTrainBuilding(w, (b) => b.type === 'chest');
 }
 
 export function hasBed(w: WorldState): boolean {
-  return w.flatbeds.some((c) => c.buildings.some((b) => b.type === 'bed'));
+  return anyTrainBuilding(w, (b) => b.type === 'bed');
 }
 
 export function isNight(w: WorldState): boolean {
@@ -1083,7 +1127,7 @@ export function buildNextRoutes(stationIdx: number): RouteOption[] {
         zone: 'monster',
         tier: 2,
         distance: 980,
-        desc: '驶入怪物区域（等级 II）：多种怪物盘踞，站内零件、油罐与密库更丰厚',
+        desc: '驶入怪物区域（等级 II）：多种怪物盘踞，站内零件、魔晶与密库更丰厚',
       },
     ];
   }
@@ -1117,7 +1161,7 @@ export function buildNextRoutes(stationIdx: number): RouteOption[] {
       zone: 'fantasy',
       tier: highTier,
       distance: 1260 + stationIdx * 120,
-      desc: `驶入奇幻区域（等级 ${getZoneTierRoman(highTier)}）：产出秘法晶石与魔力药剂，但怪物极其强大`,
+      desc: `驶入奇幻区域（等级 ${getZoneTierRoman(highTier)}）：产出大量魔晶与魔力药剂，但怪物极其强大`,
     },
     {
       id: `st${num}_old_city`,
@@ -1149,7 +1193,7 @@ export function selectRoute(w: WorldState, routeId: string): boolean {
     w,
     w.player.x,
     w.player.y - 36,
-    `🗺 已锁定目标：${found.stationName}（${found.distance}m，常速预计耗油 ~${est}）`,
+    `🗺 已锁定目标：${found.stationName}（${found.distance}m，常速预计耗晶 ~${est}）`,
     ZONE_META[found.zone].color
   );
   return true;
@@ -1175,8 +1219,8 @@ export function restInBed(w: WorldState, cx = w.player.x, cy = w.player.y): stri
   w.player.hunger = Math.max(15, w.player.hunger - 12);
   w.player.thirst = Math.max(15, w.player.thirst - 14);
   // Crops grow slightly while time passes
-  for (const car of w.flatbeds) {
-    for (const b of car.buildings) {
+  for (const deck of getTrainBuildingLists(w)) {
+    for (const b of deck) {
       if (b.type === 'planter' && b.planted && (b.growth ?? 0) < 100) {
         b.growth = Math.min(100, (b.growth ?? 0) + 25);
       }
@@ -1193,7 +1237,7 @@ export function getVitalWarnings(w: WorldState): string[] {
   if (p.hp <= 30) out.push(`🩸 生命垂危 (${Math.ceil(p.hp)}/${p.maxHp})：按 4 吃热麦饼/魔药 或 床铺休息！`);
   if (p.hunger <= 25) out.push(p.hunger <= 0 ? '🍖 已饿到极限正在掉血！立刻按 4 进食！' : `🍖 极度饥饿 (${Math.ceil(p.hunger)}%)：请按 4 进食`);
   if (p.thirst <= 25) out.push(p.thirst <= 0 ? '💧 严重脱水正在掉血！立刻按 4 喝水！' : `💧 严重口渴 (${Math.ceil(p.thirst)}%)：请按 4 喝水`);
-  if (p.bodyTemp <= 35) out.push(p.bodyTemp <= 0 ? '🥶 严重失温正在掉血！速回封闭车厢靠近锅炉/熔炉！' : `🥶 体温过低 (${Math.ceil(p.bodyTemp)}%)：关门并靠近锅炉/熔炉取暖`);
+  if (p.bodyTemp <= 35) out.push(p.bodyTemp <= 0 ? '🥶 严重失温正在掉血！速回封闭车厢靠近魔核/熔炉！' : `🥶 体温过低 (${Math.ceil(p.bodyTemp)}%)：关门并靠近魔核/熔炉取暖`);
   return out;
 }
 
@@ -1322,11 +1366,11 @@ const QUESTS: QuestDef[] = [
     rewardText: '+3 木材',
   },
   {
-    title: '③ 收集稀缺燃料并添入锅炉',
-    desc: '在废墟搜刮油桶或按 Tab 用木材压制木炭，到车头锅炉按 E 添煤（累计添入 ≥ 4）',
+    title: '③ 收集魔晶并投入魔核',
+    desc: '在废墟敲碎魔晶簇，或按 Tab 用木材粗炼魔晶，到车头锅炉按 E 投入（累计投入 ≥ 4）',
     check: (w) => {
       const added = Math.floor(w.totalFuelAdded);
-      return { done: added >= 4, progress: `已添燃料 ${Math.min(added, 4)}/4` };
+      return { done: added >= 4, progress: `已投入魔晶 ${Math.min(added, 4)}/4` };
     },
     reward: { ammo: 4 },
     rewardText: '+4 霰弹',
@@ -1335,21 +1379,21 @@ const QUESTS: QuestDef[] = [
     title: '④ 应对夜晚与暴风雪：照明或取暖',
     desc: '在车厢内建造 1 座【铁炉灶台】或【车厢壁灯】，并关好车门防怪闯入',
     check: (w) => {
-      const ok = w.flatbeds.some((c) => c.buildings.some((b) => b.type === 'campfire' || b.type === 'lantern'));
+      const ok = anyTrainBuilding(w, (b) => b.type === 'campfire' || b.type === 'lantern');
       return { done: ok, progress: ok ? '已就绪 ✓' : '炉灶/壁灯 0/1' };
     },
     reward: { cookedFood: 1, fuel: 2 },
-    rewardText: '+1 热麦饼 +2 燃料',
+    rewardText: '+1 热麦饼 +2 魔晶',
   },
   {
-    title: '⑤ 选定下一站路线，备足燃料启程推进',
-    desc: '在车头控制台选定下一座目标站点（查看预计耗油），添足锅炉燃料并拉油门出发推进 200m',
+    title: '⑤ 选定下一站路线，备足魔晶启程推进',
+    desc: '在车头控制台选定下一座目标站点（查看预计耗晶），给魔核补足魔晶并拉油门出发推进 200m',
     check: (w) => {
       const d = Math.floor(Math.max(0, w.totalDistance - CITY_ESCAPE_METERS));
       return { done: d >= 200, progress: `荒原推进 ${Math.min(d, 200)}m / 200m` };
     },
     reward: { fuel: 2, parts: 1 },
-    rewardText: '+2 燃料 +1 零件',
+    rewardText: '+2 魔晶 +1 零件',
   },
   {
     title: '⑥ 车钩扩建：挂接或组装 2 号车厢',
@@ -1359,7 +1403,7 @@ const QUESTS: QuestDef[] = [
       return { done: n >= 2, progress: `当前车厢 ${n}/2` };
     },
     reward: { fuel: 3 },
-    rewardText: '+3 燃料',
+    rewardText: '+3 魔晶',
   },
   {
     title: '⑦ 挺过黑夜或极端天气',
@@ -1373,7 +1417,7 @@ const QUESTS: QuestDef[] = [
   },
   {
     title: '⑧ 跨越漫长荒原，抵达水塔小站',
-    desc: '规划燃料补给、修补断轨，驶完 1200m 抵达「站2 · 水塔小站」',
+    desc: '规划魔晶补给、修补断轨，驶完 1200m 抵达「站2 · 水塔小站」',
     check: (w) => {
       const ok = w.stationIdx >= 1;
       return { done: ok, progress: ok ? '已抵达 ✓' : `距下站 ${Math.max(0, Math.round(w.legTotal - w.legDistance))}m` };
@@ -1494,14 +1538,14 @@ function getLostWorldLore(
       {
         title: '灰烬驿站 · 被遗忘的边陲',
         epigraph: '流放者曾在此点燃最后的篝火，如今唯余破败厂房与深处的封存金库。',
-        rumors: ['⚙ 重型机务检修厂', '⛽ 荒野遗弃油罐队', '🏺 深层市政金库'],
+        rumors: ['⚙ 重型机务检修厂', '🔮 荒野遗弃魔晶队', '🏺 深层市政金库'],
       },
     ],
     monster: [
       {
         title: '猩红骸谷 · 失落的猎场',
         epigraph: '血色岩层下回荡着嗜血低吼，越远离铁轨深入未知，越能寻获前代远征队的遗物。',
-        rumors: ['🛡 巨兽硬甲壳（升级背包）', '⛽ 战损油罐车队', '🏺 失落军械圣匣'],
+        rumors: ['🛡 巨兽硬甲壳（升级背包）', '🔮 战损魔晶车队', '🏺 失落军械圣匣'],
       },
       {
         title: '裂齿荒城 · 嗜血禁区',
@@ -1513,12 +1557,12 @@ function getLostWorldLore(
       {
         title: '紫晶秘境 · 失落的星陨城',
         epigraph: '破碎的魔导尖塔仍在低语，秘法晶脉在迷雾深处闪烁着致命而诱人的微光。',
-        rumors: ['🔮 秘法晶石矿脉', '🧪 古代炼金密室', '🏺 秘法远古圣匣'],
+        rumors: ['🔮 魔晶矿脉', '🧪 古代炼金密室', '🏺 秘法远古圣匣'],
       },
       {
         title: '星辉废墟 · 秘法禁域',
         epigraph: '现实的法则在此扭曲，每一片未踏足的迷雾之后，都可能沉睡着上古魔导造物。',
-        rumors: ['🔮 高纯秘法晶簇', '🧪 稀世魔力药剂', '🏺 失落星陨圣匣'],
+        rumors: ['🔮 高纯魔晶簇', '🧪 稀世魔力药剂', '🏺 失落星陨圣匣'],
       },
     ],
     old_city: [
@@ -1676,7 +1720,7 @@ export function buildStationMap(
       ? '🔒 以太核心实验室 [需 Lv.3 切割锯]'
       : zone === 'old_city'
         ? '🔒 远古能源中枢密库 [需 Lv.3 切割锯]'
-        : '🔒 地下应急油库密室 [需 Lv.3 切割锯]',
+        : '🔒 地下应急魔晶密室 [需 Lv.3 切割锯]',
     zone === 'fantasy' ? '#281d3b' : '#262d36'
   );
 
@@ -1688,7 +1732,7 @@ export function buildStationMap(
     { uid: uid('p'), kind: 'wood_crate', mat: 'wood', x: px(-180), y: -175, r: 20, hp: 32, maxHp: 32, hitFlash: 0, label: '月台旧木箱', drops: { wood: 5, rawFood: 1 } },
     { uid: uid('p'), kind: 'scrap_pile', mat: 'metal', x: px(-85), y: -180, r: 22, hp: 40, maxHp: 40, hitFlash: 0, label: '铁道废铁堆', drops: { scrap: 6 } },
     { uid: uid('p'), kind: 'dry_tree', mat: 'wood', x: px(-295), y: -185, r: 22, hp: 34, maxHp: 34, hitFlash: 0, label: '干枯枕木堆', drops: { wood: 6 } },
-    { uid: uid('p'), kind: 'fuel_barrel', mat: 'barrel', x: px(120), y: -180, r: 18, hp: 36, maxHp: 36, hitFlash: 0, label: '月台油桶', drops: { fuel: 3, scrap: 2 } },
+    { uid: uid('p'), kind: 'crystal_cluster', mat: 'crystal', x: px(120), y: -180, r: 18, hp: 36, maxHp: 36, hitFlash: 0, label: '月台魔晶簇', drops: { fuel: 3, scrap: 2 } },
 
     // Building 1: Station Waiting Hall (Lv.1)
     { uid: uid('p'), kind: 'wood_crate', mat: 'wood', x: px(-480), y: -435, r: 20, hp: 32, maxHp: 32, hitFlash: 0, label: '候车行李箱', drops: { wood: 5, water: 2, rawFood: 2 } },
@@ -1700,7 +1744,7 @@ export function buildStationMap(
 
     // Building 3: South Residential Tenement (Lv.1)
     { uid: uid('p'), kind: 'wood_crate', mat: 'wood', x: px(-465), y: 395, r: 20, hp: 32, maxHp: 32, hitFlash: 0, label: '民居木柜', drops: { wood: 5, rawFood: 2, water: 2 } },
-    { uid: uid('p'), kind: 'fuel_barrel', mat: 'barrel', x: px(-365), y: 425, r: 18, hp: 36, maxHp: 36, hitFlash: 0, label: '煤油暖炉罐', drops: { fuel: 3, scrap: 2 } },
+    { uid: uid('p'), kind: 'crystal_cluster', mat: 'crystal', x: px(-365), y: 425, r: 18, hp: 36, maxHp: 36, hitFlash: 0, label: '民居魔晶簇', drops: { fuel: 3, scrap: 2 } },
 
     // Building 4: East Freight Shed (Lv.1) + Freight Siding Carriage
     { uid: uid('p'), kind: 'flatbed_siding', x: px(1080), y: -215, r: 42, hp: 999, maxHp: 999, hitFlash: 0, label: '废弃备用车厢（需车钩挂接）', interactOnly: true },
@@ -1725,26 +1769,26 @@ export function buildStationMap(
       maxHp: 46,
       hitFlash: 0,
       label: zone === 'fantasy' ? '✨ 秘法温室晶簇' : '医疗与急救物资柜',
-      drops: zone === 'fantasy' ? { magicShard: 2, arcanePotion: 2 } : { cookedFood: 3, water: 4, arcanePotion: 1 },
+      drops: zone === 'fantasy' ? { fuel: 2, arcanePotion: 2 } : { cookedFood: 3, water: 4, arcanePotion: 1 },
     },
 
     // Building 6: West Locomotive Depot (Lv.2 Pickaxe)
     { uid: uid('p'), kind: 'scrap_car', mat: 'metal', x: px(-1040), y: 405, r: 28, hp: 70, maxHp: 70, hitFlash: 0, label: '装甲检修车（含正规车钩）', drops: { scrap: 10, parts: 4, coupler: 1, fuel: 4 } },
-    { uid: uid('p'), kind: 'fuel_barrel', mat: 'barrel', x: px(-910), y: 445, r: 18, hp: 38, maxHp: 38, hitFlash: 0, label: '高压储油罐', drops: { fuel: 5, scrap: 2 } },
+    { uid: uid('p'), kind: 'crystal_cluster', mat: 'crystal', x: px(-910), y: 445, r: 18, hp: 38, maxHp: 38, hitFlash: 0, label: '机务段魔晶矿', drops: { fuel: 5, scrap: 2 } },
 
     // Building 7: East Armory / Watchtower (Lv.2 Pickaxe)
     { uid: uid('p'), kind: 'parts_box', mat: 'metal', x: px(865), y: 400, r: 22, hp: 50, maxHp: 50, hitFlash: 0, label: '军械弹药箱', drops: { ammo: 14, parts: 4, rails: 2 } },
     {
       uid: uid('p'),
-      kind: zone === 'old_city' ? 'ancient_vault' : 'fuel_barrel',
-      mat: 'metal',
+      kind: zone === 'old_city' ? 'ancient_vault' : 'crystal_cluster',
+      mat: zone === 'old_city' ? 'metal' : 'crystal',
       x: px(1010),
       y: 435,
       r: 22,
       hp: 52,
       maxHp: 52,
       hitFlash: 0,
-      label: zone === 'old_city' ? '🏛 卫戍远古遗物箱' : '军用燃油储罐',
+      label: zone === 'old_city' ? '🏛 卫戍远古遗物箱' : '军用魔晶匣',
       drops: zone === 'old_city' ? { ancientRelic: 1, scrap: 8, fuel: 4 } : { fuel: 5, scrap: 6 },
     },
 
@@ -1762,7 +1806,7 @@ export function buildStationMap(
       label: zone === 'fantasy' ? '✨ 圣坛主魔晶' : '🏛 城市核心远古密箱',
       drops:
         zone === 'fantasy'
-          ? { magicShard: 5, arcanePotion: 3, fuel: 6, parts: 4 }
+          ? { fuel: 11, arcanePotion: 3, parts: 4 }
           : { ancientRelic: 2, coupler: 1, parts: 5, fuel: 6, rails: 2 },
     },
     {
@@ -1776,7 +1820,7 @@ export function buildStationMap(
       maxHp: 54,
       hitFlash: 0,
       label: zone === 'fantasy' ? '✨ 秘法典藏箱' : '金库精密构件箱',
-      drops: zone === 'fantasy' ? { magicShard: 3, fuel: 4 } : { ancientRelic: 1, parts: 4, ammo: 12 },
+      drops: zone === 'fantasy' ? { fuel: 7 } : { ancientRelic: 1, parts: 4, ammo: 12 },
     },
 
     // Building 9: South Deep Landmark (Lv.3 Steam Saw)
@@ -1793,10 +1837,10 @@ export function buildStationMap(
       label: zone === 'fantasy' ? '✨ 以太核心反应晶' : '🏛 地下能源密箱',
       drops:
         zone === 'fantasy'
-          ? { magicShard: 4, fuel: 6, arcanePotion: 2 }
+          ? { fuel: 10, arcanePotion: 2 }
           : { ancientRelic: 1, fuel: 8, parts: 4, coupler: 1 },
     },
-    { uid: uid('p'), kind: 'fuel_barrel', mat: 'barrel', x: px(455), y: 855, r: 20, hp: 42, maxHp: 42, hitFlash: 0, label: '深层高压油罐', drops: { fuel: 6, rails: 2 } },
+    { uid: uid('p'), kind: 'crystal_cluster', mat: 'crystal', x: px(455), y: 855, r: 20, hp: 42, maxHp: 42, hitFlash: 0, label: '深层魔晶矿', drops: { fuel: 6, rails: 2 } },
   ];
 
   // Station 2+ friendly camp facilities on North Civic Plaza
@@ -1992,6 +2036,7 @@ export function createInitialWorld(): WorldState {
     locoMaxHp: 160,
     locoHull: createCarHull(LOCO_COLS, 1),
     hasBumper: false,
+    locoBuildings: [],
     boilerFuel: 4, // Enough to slowly escape the burning city, still scarce once in Exile Lands!
     boilerMax: 20,
     totalFuelAdded: 0,
@@ -2085,9 +2130,12 @@ export function tryPlaceBuilding(w: WorldState, wx: number, wy: number): string 
   }
 
   const tile = worldToTrainTile(w, wx, wy);
-  if (!tile) return '请点击车厢内部 5×4 网格进行自由布置';
-  const car = w.flatbeds[tile.carIdx];
-  if (car.buildings.some((b) => b.col === tile.col && b.row === tile.row)) {
+  if (!tile) return '请点击车厢 5×4 或车头 4×4 甲板网格进行布置';
+  if (tile.carIdx < 0 && isLocoCoreTile(tile.col, tile.row)) {
+    return '该格是车头核心（锅炉、驾驶台或提灯挂钩），不能覆盖';
+  }
+  const host = tile.carIdx < 0 ? w.locoBuildings : w.flatbeds[tile.carIdx].buildings;
+  if (host.some((b) => b.col === tile.col && b.row === tile.row)) {
     return '该格子已有设施（右键可拆除回收）';
   }
 
@@ -2097,7 +2145,7 @@ export function tryPlaceBuilding(w: WorldState, wx: number, wy: number): string 
   }
 
   spendCost(w, def.cost);
-  car.buildings.push(makeBuilding(w.selectedBuild, tile.carIdx, tile.col, tile.row));
+  host.push(makeBuilding(w.selectedBuild, tile.carIdx, tile.col, tile.row));
   w.stats.buildingsPlaced++;
   sfx.build();
   spawnParticles(w, center.x, center.y, def.color, 10, 95);
@@ -2113,10 +2161,11 @@ export function tryPlaceBuilding(w: WorldState, wx: number, wy: number): string 
 export function tryRemoveBuilding(w: WorldState, wx: number, wy: number): boolean {
   const tile = worldToTrainTile(w, wx, wy);
   if (!tile) return false;
-  const car = w.flatbeds[tile.carIdx];
-  const idx = car.buildings.findIndex((b) => b.col === tile.col && b.row === tile.row);
+  const host = tile.carIdx < 0 ? w.locoBuildings : w.flatbeds[tile.carIdx]?.buildings;
+  if (!host) return false;
+  const idx = host.findIndex((b) => b.col === tile.col && b.row === tile.row);
   if (idx < 0) return false;
-  const [removed] = car.buildings.splice(idx, 1);
+  const [removed] = host.splice(idx, 1);
   if (w.openChestUid === removed.uid) w.openChestUid = null;
 
   const c = getTileCenter(tile.carIdx, tile.col, tile.row);
@@ -2211,7 +2260,7 @@ export function shiftGear(w: WorldState, delta: number): void {
   }
   w.gear = next;
   sfx.lever();
-  addFloat(w, 130, -28, `档位：${GEAR_LABELS[w.gear]}${w.gear === 3 ? '（极速·高油耗）' : ''}`, '#ffd56b');
+  addFloat(w, 130, -28, `档位：${GEAR_LABELS[w.gear]}${w.gear === 3 ? '（极速·魔晶消耗大）' : ''}`, '#ffd56b');
 }
 
 export function eatOrDrink(w: WorldState): void {
@@ -2423,6 +2472,10 @@ export function handlePrimaryAction(w: WorldState, wx: number, wy: number): void
         if (broke) sfx.breakWood();
         else sfx.hitWood();
         spawnParticles(w, prop.x, prop.y, '#c79258', broke ? 18 : 8, broke ? 175 : 125, ang);
+      } else if (mat === 'crystal') {
+        if (broke) sfx.breakMetal();
+        else sfx.hitBarrel();
+        spawnParticles(w, prop.x, prop.y, broke ? '#e0aaff' : '#c77dff', broke ? 18 : 8, broke ? 180 : 125, ang);
       } else if (mat === 'barrel') {
         if (broke) sfx.breakMetal();
         else sfx.hitBarrel();
@@ -2447,18 +2500,8 @@ export function handlePrimaryAction(w: WorldState, wx: number, wy: number): void
 
   // 3) Repair damaged interior building / extinguish fire / repair loco
   if (!hitAnything) {
-    if (w.locoHp < w.locoMaxHp && w.player.x >= -10 && w.player.x <= LOCO_W && Math.abs(w.player.y) <= HALF_H) {
-      if (getItemCount(w, 'scrap') >= 1) {
-        spendCost(w, { scrap: 1 });
-        w.locoHp = Math.min(w.locoMaxHp, w.locoHp + 25);
-        sfx.hitMetal();
-        spawnParticles(w, hitX, hitY, '#74c0fc', 6, 90);
-        addFloat(w, hitX, hitY - 12, '修理车头 +25', '#74c0fc');
-        return;
-      }
-    }
-    for (const car of w.flatbeds) {
-      for (const b of car.buildings) {
+    for (const deck of getTrainBuildingLists(w)) {
+      for (const b of deck) {
         const c = getTileCenter(b.carIdx, b.col, b.row);
         if (Math.hypot(c.x - hitX, c.y - hitY) <= 36) {
           if (b.onFire) {
@@ -2480,6 +2523,17 @@ export function handlePrimaryAction(w: WorldState, wx: number, wy: number): void
       }
     }
 
+    if (w.locoHp < w.locoMaxHp && w.player.x >= -10 && w.player.x <= LOCO_W && Math.abs(w.player.y) <= HALF_H) {
+      if (getItemCount(w, 'scrap') >= 1) {
+        spendCost(w, { scrap: 1 });
+        w.locoHp = Math.min(w.locoMaxHp, w.locoHp + 25);
+        sfx.hitMetal();
+        spawnParticles(w, hitX, hitY, '#74c0fc', 6, 90);
+        addFloat(w, hitX, hitY - 12, '修理车头 +25', '#74c0fc');
+        return;
+      }
+    }
+
     // Player never damages their own carriage hull; crowbar near damaged hull repairs it instead!
     for (const { carIdx, panel } of getAllHullPanels(w)) {
       if (panel.hp >= panel.maxHp || isHullPassage(w, carIdx, panel)) continue;
@@ -2497,8 +2551,8 @@ export function handlePrimaryAction(w: WorldState, wx: number, wy: number): void
 }
 
 export function findBuildingByUid(w: WorldState, id: string): PlacedBuilding | null {
-  for (const c of w.flatbeds) {
-    const f = c.buildings.find((b) => b.uid === id);
+  for (const deck of getTrainBuildingLists(w)) {
+    const f = deck.find((b) => b.uid === id);
     if (f) return f;
   }
   return null;
@@ -2521,7 +2575,7 @@ function damageMonster(w: WorldState, m: MonsterEntity, dmg: number, kbX: number
       if (Math.random() < 0.65) spawnPickup(w, 'ammo', 2, m.x, m.y, m.onTrain);
       if (Math.random() < 0.4) spawnPickup(w, 'fuel', 1, m.x, m.y, m.onTrain);
     } else if (m.kind === 'arcane_wraith') {
-      spawnPickup(w, 'magicShard', 1 + (m.tier >= 4 ? 1 : 0), m.x, m.y, m.onTrain);
+      spawnPickup(w, 'fuel', 1 + (m.tier >= 4 ? 1 : 0), m.x, m.y, m.onTrain);
       if (Math.random() < 0.35) spawnPickup(w, 'arcanePotion', 1, m.x, m.y, m.onTrain);
     } else if (m.kind === 'ruin_golem') {
       spawnPickup(w, 'parts', 2, m.x, m.y, m.onTrain);
@@ -2552,7 +2606,14 @@ export function collectProp(w: WorldState, prop: WorldProp): boolean {
     return false;
   }
   sfx.pickup();
-  spawnParticles(w, prop.x, prop.y, prop.mat === 'wood' ? '#c79258' : prop.mat === 'barrel' ? '#ff7b29' : '#ffe08a', 10, 125);
+  spawnParticles(
+    w,
+    prop.x,
+    prop.y,
+    prop.mat === 'wood' ? '#c79258' : prop.mat === 'crystal' ? '#c77dff' : prop.mat === 'barrel' ? '#ff7b29' : '#ffe08a',
+    10,
+    125
+  );
   addFloat(w, prop.x, prop.y - 20, `📦 拾取 ${gained.join(' ')}`, '#b2f2bb');
   if (!anyLeft) {
     prop.hp = 0;
@@ -2619,9 +2680,12 @@ export function handlePlayerDeath(w: WorldState): void {
       intact.splice(idx, 1);
     }
     // Destroy 1 random interior building if any
-    if (car.buildings.length > 0) {
-      const bIdx = Math.floor(Math.random() * car.buildings.length);
-      const [remB] = car.buildings.splice(bIdx, 1);
+    const pool: Array<{ list: PlacedBuilding[]; idx: number }> = [];
+    car.buildings.forEach((_, idx) => pool.push({ list: car.buildings, idx }));
+    w.locoBuildings.forEach((_, idx) => pool.push({ list: w.locoBuildings, idx }));
+    if (pool.length > 0) {
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      const [remB] = pick.list.splice(pick.idx, 1);
       lostBuildings.push(BUILDINGS[remB.type].name);
     }
   }
@@ -2681,7 +2745,7 @@ function updateActiveHint(w: WorldState): void {
       w.activeHint = {
         x: 136,
         y: -36,
-        label: '[E] 🗺 选定下一座目标站点（查看预计燃料消耗后发车）',
+        label: '[E] 🗺 选定下一座目标站点（查看预计魔晶消耗后发车）',
         action: () => {
           w.routeOpen = true;
           w.craftOpen = false;
@@ -2695,7 +2759,7 @@ function updateActiveHint(w: WorldState): void {
     const nextGear = ((w.gear + 1) % (isOverloaded(w) ? 3 : 4)) as GearLevel;
     const estNote =
       w.mode === 'station' && w.selectedRoute
-        ? ` · 目标:${w.selectedRoute.stationName}(需油~${estimateRouteFuel(w, w.selectedRoute.distance, 2)})`
+        ? ` · 目标:${w.selectedRoute.stationName}(需晶~${estimateRouteFuel(w, w.selectedRoute.distance, 2)})`
         : '';
     w.activeHint = {
       x: 136,
@@ -2704,7 +2768,7 @@ function updateActiveHint(w: WorldState): void {
       action: () => {
         w.gear = nextGear;
         sfx.lever();
-        addFloat(w, 136, -24, `油门：${GEAR_LABELS[w.gear]}${w.gear === 3 ? '（快速·高耗油）' : ''}`, '#ffd56b');
+        addFloat(w, 136, -24, `油门：${GEAR_LABELS[w.gear]}${w.gear === 3 ? '（快速·魔晶消耗大）' : ''}`, '#ffd56b');
       },
     };
     return;
@@ -2723,30 +2787,30 @@ function updateActiveHint(w: WorldState): void {
     return;
   }
 
-  // 3. Boiler Furnace (x=54, y=-28) — scarce fuel adds +3 at a time!
+  // 3. Boiler / magic core (x=54, y=-28) — scarce crystals add +3 at a time!
   if (Math.hypot(px - 54, py + 28) < 46) {
     const fuelAvail = getItemCount(w, 'fuel');
     w.activeHint = {
       x: 54,
       y: -58,
-      label: `[E] 往锅炉添燃料 +3（可用燃料 ${fuelAvail}）`,
+      label: `[E] 往魔核投入魔晶 +3（可用魔晶 ${fuelAvail}）`,
       action: () => {
         const avail = getItemCount(w, 'fuel');
         if (avail <= 0) {
-          addFloat(w, 54, -44, '没有燃料了！下车敲油桶/枯木压制木炭', '#ff8787');
+          addFloat(w, 54, -44, '没有魔晶了！去敲晶脉，或用熔炉粗炼', '#ff8787');
           return;
         }
         const add = Math.min(3, avail, Math.ceil(w.boilerMax - w.boilerFuel));
         if (add <= 0) {
-          addFloat(w, 54, -44, '锅炉已经加满了', '#ffd56b');
+          addFloat(w, 54, -44, '魔核已经充满了', '#ffd56b');
           return;
         }
         spendCost(w, { fuel: add });
         w.boilerFuel = Math.min(w.boilerMax, w.boilerFuel + add);
         w.totalFuelAdded += add;
         sfx.build();
-        spawnParticles(w, 54, -28, '#ff7b29', 10, 90);
-        addFloat(w, 54, -44, `🔥 添燃料 +${add}（够推进一小段！）`, '#ffae42');
+        spawnParticles(w, 54, -28, '#c77dff', 10, 90);
+        addFloat(w, 54, -44, `🔮 投入魔晶 +${add}（魔核又能推一段）`, '#e0aaff');
       },
     };
     return;
@@ -2866,9 +2930,9 @@ function updateActiveHint(w: WorldState): void {
     }
   }
 
-  // 7. Placed Train Buildings
-  for (const car of w.flatbeds) {
-    for (const b of car.buildings) {
+  // 7. Placed Train Buildings (flatbeds and locomotive deck)
+  for (const deck of getTrainBuildingLists(w)) {
+    for (const b of deck) {
       const c = getTileCenter(b.carIdx, b.col, b.row);
       if (Math.hypot(px - c.x, py - c.y) > 46) continue;
 
@@ -2954,11 +3018,11 @@ function updateActiveHint(w: WorldState): void {
       }
       if (b.type === 'campfire') {
         const q = b.smeltQueue ?? 0;
-        const status = q > 0 ? `燃烧中(${b.smeltKind === 'food' ? '热麦饼' : '木炭'} ${Math.round(b.smeltProgress ?? 0)}% · 队列${q})` : '空闲';
+        const status = q > 0 ? `炼制中(${b.smeltKind === 'food' ? '热麦饼' : '魔晶'} ${Math.round(b.smeltProgress ?? 0)}% · 队列${q})` : '空闲';
         w.activeHint = {
           x: c.x,
           y: c.y - 28,
-          label: `[E] 熔炉投料（优先烤热麦饼，否则烧木炭燃料 · ${status}）`,
+          label: `[E] 熔炉投料（优先烤热麦饼，否则粗炼魔晶 · ${status}）`,
           action: () => {
             if (canAffordCost(w, { rawFood: 2, wood: 1 })) {
               spendCost(w, { rawFood: 2, wood: 1 });
@@ -2971,9 +3035,9 @@ function updateActiveHint(w: WorldState): void {
               b.smeltKind = 'charcoal';
               b.smeltQueue = (b.smeltQueue ?? 0) + 1;
               sfx.build();
-              addFloat(w, c.x, c.y - 16, '🔥 熔炉已投入：烧制木炭燃料（行驶中照常燃烧）', '#ffae42');
+              addFloat(w, c.x, c.y - 16, '🔮 熔炉已投入：粗炼魔晶（行驶中照常炼制）', '#e0aaff');
             } else {
-              addFloat(w, c.x, c.y - 16, '需 2生粮+1木（烤饼）或 3木（烧炭）', '#ff8787');
+              addFloat(w, c.x, c.y - 16, '需 2生粮+1木（烤饼）或 3木（粗炼魔晶）', '#ff8787');
             }
           },
         };
@@ -3205,8 +3269,8 @@ function resolvePlayerCollisions(w: WorldState): void {
 
   for (let iter = 0; iter < 3; iter++) {
     // 1) Push out of solid placed buildings (Circle vs AABB)
-    for (const car of w.flatbeds) {
-      for (const b of car.buildings) {
+    for (const deck of getTrainBuildingLists(w)) {
+      for (const b of deck) {
         if (!BUILDINGS[b.type].solid || (b.type === 'door' && b.doorOpen)) continue;
         const c = getTileCenter(b.carIdx, b.col, b.row);
         const qx = Math.max(c.x - bHalf, Math.min(p.x, c.x + bHalf));
@@ -3460,7 +3524,7 @@ function updateLostWorldExploration(w: WorldState, dt: number): void {
             maxHp: 46,
             hitFlash: 0,
             label: '荒野秘法晶脉',
-            drops: { magicShard: 2 + Math.floor(distRing * 0.6), arcanePotion: h2 > 0.55 ? 1 : 0 },
+            drops: { fuel: 2 + Math.floor(distRing * 0.6), arcanePotion: h2 > 0.55 ? 1 : 0 },
           },
           {
             uid: uid('prop'),
@@ -3495,15 +3559,15 @@ function updateLostWorldExploration(w: WorldState, dt: number): void {
           },
           {
             uid: uid('prop'),
-            kind: 'fuel_barrel',
-            mat: 'barrel',
+            kind: 'crystal_cluster',
+            mat: 'crystal',
             x: worldX + 72,
             y: worldY + 24,
             r: 16,
             hp: 26,
             maxHp: 26,
             hitFlash: 0,
-            label: '遗落油桶',
+            label: '遗落魔晶簇',
             drops: { fuel: 3 },
           },
           {
@@ -3639,7 +3703,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         w.lightningFlash = 0.8;
         addFloat(w, w.player.x, w.player.y - 44, '⛈ 荒原暴雨袭来！接水斗狂蓄水，户外能见度骤降', '#74c0fc');
       } else {
-        addFloat(w, w.player.x, w.player.y - 44, '❄ 暴风雪降临！立刻关紧车门并靠近锅炉/炉灶取暖！', '#a5d8ff');
+        addFloat(w, w.player.x, w.player.y - 44, '❄ 暴风雪降临！立刻关紧车门并靠近魔核/炉灶取暖！', '#a5d8ff');
       }
     } else {
       w.weather = 'clear';
@@ -3673,8 +3737,8 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   // Temperature check: near lit boiler/campfire OR inside sealed car!
   let nearHeat = w.boilerFuel > 0 && Math.hypot(p.x - 54, p.y + 28) < 115;
   if (!nearHeat) {
-    for (const car of w.flatbeds) {
-      for (const b of car.buildings) {
+    for (const deck of getTrainBuildingLists(w)) {
+      for (const b of deck) {
         if (b.type === 'campfire') {
           const c = getTileCenter(b.carIdx, b.col, b.row);
           if (Math.hypot(p.x - c.x, p.y - c.y) < 115) {
@@ -3723,7 +3787,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   } else if (p.bodyTemp <= 35 && w.vitalWarnCd.temp <= 0) {
     w.vitalWarnCd.temp = 10;
     sfx.alert();
-    addFloat(w, p.x, p.y - 34, p.bodyTemp <= 0 ? '🥶 警告：严重失温正在掉血！速回锅炉/熔炉旁！' : '🥶 提示：体温过低，请回封闭车厢取暖', '#a5d8ff');
+    addFloat(w, p.x, p.y - 34, p.bodyTemp <= 0 ? '🥶 警告：严重失温正在掉血！速回魔核/熔炉旁！' : '🥶 提示：体温过低，请回封闭车厢取暖', '#a5d8ff');
   }
 
   // 2. Player Movement (Smooth velocity + push-out collision resolution so player NEVER gets stuck!)
@@ -3757,7 +3821,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   if (overloaded && w.gear === 3) w.gear = 2;
   if (w.boilerFuel <= 0 && w.gear > 0) {
     w.gear = 0;
-    addFloat(w, 54, -40, '⛽ 锅炉燃尽熄火！快向锅炉添燃料或用熔炉烧木炭！', '#ff8787');
+    addFloat(w, 54, -40, '🔮 魔核枯竭，列车熄火！快投入魔晶或用熔炉粗炼！', '#ff8787');
     sfx.alert();
   }
 
@@ -3841,7 +3905,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         life: 0.7,
         maxLife: 0.7,
         size: 8 + Math.random() * 6,
-        color: 'rgba(210, 200, 188, 0.45)',
+        color: 'rgba(196, 170, 230, 0.42)',
       });
     }
 
@@ -4003,10 +4067,12 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
     }
   }
 
-  // 4. Buildings Update
+  // 4. Buildings Update (locomotive deck + flatbeds)
   const isRaining = w.weather === 'rainstorm';
-  for (const car of w.flatbeds) {
-    for (const b of car.buildings) {
+  const buildingDecks = getTrainBuildingLists(w);
+  for (let di = 0; di < buildingDecks.length; di++) {
+    const list = buildingDecks[di];
+    for (const b of list) {
       b.hitFlash = Math.max(0, (b.hitFlash ?? 0) - dt);
       const c = getTileCenter(b.carIdx, b.col, b.row);
 
@@ -4034,7 +4100,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
             addFloat(w, c.x, c.y - 18, '🥖 熔炉出炉：热麦饼 ×2！', '#ffd56b');
           } else {
             giveItem(w, 'fuel', 2);
-            addFloat(w, c.x, c.y - 18, '⛽ 熔炉烧成：木炭燃料 ×2！', '#ffae42');
+            addFloat(w, c.x, c.y - 18, '🔮 熔炉炼成：魔晶 ×2！', '#e0aaff');
           }
           sfx.pickup();
           if (b.smeltQueue <= 0) b.smeltKind = null;
@@ -4079,7 +4145,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         }
       }
     }
-    car.buildings = car.buildings.filter((b) => {
+    const kept = list.filter((b) => {
       if (b.hp <= 0) {
         const c = getTileCenter(b.carIdx, b.col, b.row);
         if (w.openChestUid === b.uid) w.openChestUid = null;
@@ -4093,6 +4159,8 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
       }
       return true;
     });
+    if (di === 0) w.locoBuildings = kept;
+    else w.flatbeds[di - 1].buildings = kept;
   }
 
   // 5. Companion NPC
@@ -4246,8 +4314,8 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
       tx = w.decoyPos.x;
       ty = w.decoyPos.y;
     } else if (m.kind === 'burrower') {
-      for (const car of w.flatbeds) {
-        const pl = car.buildings.find((b) => b.type === 'planter');
+      for (const deck of getTrainBuildingLists(w)) {
+        const pl = deck.find((b) => b.type === 'planter');
         if (pl) {
           targetBuilding = pl;
           const c = getTileCenter(pl.carIdx, pl.col, pl.row);
@@ -4314,8 +4382,8 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
     } else {
       // Then check interior solid buildings
       let hitWall: PlacedBuilding | null = null;
-      for (const car of w.flatbeds) {
-        for (const b of car.buildings) {
+      for (const deck of getTrainBuildingLists(w)) {
+        for (const b of deck) {
           if (!BUILDINGS[b.type].solid || (b.type === 'door' && b.doorOpen)) continue;
           const c = getTileCenter(b.carIdx, b.col, b.row);
           if (Math.hypot(nx - c.x, ny - c.y) < TILE * 0.54 + m.r) {
@@ -4498,8 +4566,8 @@ function updateCompanion(w: WorldState, npc: CompanionNPC, dt: number): void {
   let chore: PlacedBuilding | null = null;
   let choreType: 'harvest' | 'water' | 'repair' | 'idle' = 'idle';
 
-  for (const car of w.flatbeds) {
-    for (const b of car.buildings) {
+  for (const deck of getTrainBuildingLists(w)) {
+    for (const b of deck) {
       if (b.type === 'planter' && b.planted && (b.growth ?? 0) >= 100) {
         chore = b;
         choreType = 'harvest';

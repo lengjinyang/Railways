@@ -34,7 +34,7 @@ const PROLOGUE_BEATS = [
     subtitle: 'ESCAPE INTO THE WASTELAND',
     body: [
       '蒸汽机车已启动，正缓缓驶离燃烧的大城市郊区——穿过这段破败的城区铁道后，你将正式踏入【流放之地 · 危险等级 I】，直面失去人性的强盗与怪物。',
-      '车头挂着一盏手提灯（按 E 取下，L 开关），夜晚仅能照亮短距锥形视野；若没带提灯且离列车越远，暗处怪物会越多且越强！每站资源有限，升级铁镐与切割锯以破开深处金库；发车前务必选定下一站并备足燃料。',
+      '车头挂着一盏手提灯（按 E 取下，L 开关），夜晚仅能照亮短距锥形视野；若没带提灯且离列车越远，暗处怪物会越多且越强！每站资源有限，升级铁镐与切割锯以破开深处金库；发车前务必选定下一站，并给魔核备足魔晶。',
     ],
     btn: '驾驶蒸汽列车，驶入荒原',
   },
@@ -100,7 +100,7 @@ export const TitlePrologue: React.FC<TitlePrologueProps> = ({ step, onNext, onSk
           <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-xl bg-black/45 border border-amber-500/20 text-xs text-stone-300">
             <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">WASD</kbd> 移动/冲刺</div>
             <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">E</kbd> 交互/开关门</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">B</kbd> 车厢建造</div>
+            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">B</kbd> 车厢/车头建造</div>
             <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">I / Tab</kbd> 背包/合成</div>
             <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">Q / F</kbd> 刹车/升档</div>
             <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">L</kbd> 开关提灯</div>

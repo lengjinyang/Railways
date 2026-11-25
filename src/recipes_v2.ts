@@ -38,7 +38,7 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     solid: true,
     cost: { wood: 3, scrap: 3 },
     color: '#c9963b',
-    desc: '解锁铁轨段、木炭燃料、土制车钩、炮塔与撞角',
+    desc: '解锁铁轨段、粗炼魔晶、土制车钩、炮塔与撞角',
   },
   chest: {
     id: 'chest',
@@ -60,7 +60,7 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     solid: true,
     cost: { scrap: 3, wood: 2 },
     color: '#d9652b',
-    desc: '按 E 投料烧制木炭燃料或烤热麦饼（行驶途中持续燃烧产出）；兼顾照明与取暖',
+    desc: '按 E 投料粗炼魔晶或烤热麦饼（行驶途中持续产出）；兼顾照明与取暖',
   },
   lantern: {
     id: 'lantern',
@@ -193,8 +193,8 @@ export interface CraftRecipe {
 export const CRAFT_RECIPES: CraftRecipe[] = [
   {
     id: 'biofuel',
-    name: '压制木炭燃料 ×2',
-    desc: '稀缺燃料补给：4 木材压缩出 2 份燃料，够列车推进一小段',
+    name: '粗炼魔晶 ×2',
+    desc: '用木材蕴养粗制魔晶：4 木材炼成 2 份，够魔核推进一小段',
     requiresWorkbench: true,
     cost: { wood: 4 },
     output: { fuel: 2 },
@@ -242,18 +242,10 @@ export const CRAFT_RECIPES: CraftRecipe[] = [
   {
     id: 'arcane_potion',
     name: '魔力药剂 ×1',
-    desc: '奇幻区魔法道具：按 4 饮用回血+55、回满体力与体温，并获强力秘法增益',
+    desc: '消耗魔晶炼制：按 4 饮用回血+55、回满体力与体温，并获强力秘法增益',
     requiresWorkbench: false,
-    cost: { magicShard: 2, water: 1 },
+    cost: { fuel: 2, water: 1 },
     output: { arcanePotion: 1 },
-  },
-  {
-    id: 'arcane_fuel',
-    name: '秘法燃核 ×4',
-    desc: '将奇幻区秘法晶石转化为高能锅炉燃料',
-    requiresWorkbench: true,
-    cost: { magicShard: 1, wood: 1 },
-    output: { fuel: 4 },
   },
   {
     id: 'relic_salvage',
