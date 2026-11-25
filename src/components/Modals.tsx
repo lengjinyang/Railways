@@ -372,10 +372,10 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
           <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-black/45 border border-amber-500/20 text-xs text-stone-300 mb-4">
             <span className="inline-flex items-center gap-1.5">
               <Flame className="w-4 h-4 text-orange-400" />
-              总可用燃料：
+              总可用魔晶：
               <b className="text-amber-300 font-mono text-sm">{totalFuel}</b>
               <span className="text-stone-400">
-                (锅炉 {world.boilerFuel.toFixed(1)} + 库存 {getItemCount(world, 'fuel')})
+                (魔核 {world.boilerFuel.toFixed(1)} + 库存 {getItemCount(world, 'fuel')})
               </span>
             </span>
             <span className="text-red-300/90">· 到达前切忌在荒野停车，否则怪物将大举围攻！</span>
@@ -414,17 +414,17 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
                     <p className="text-xs text-stone-300/90">{r.desc}</p>
                     <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono pt-1">
                       <span className="text-stone-400">
-                        缓行 <b className="text-stone-200">{estSlow}</b>油
+                        缓行 <b className="text-stone-200">{estSlow}</b>晶
                       </span>
                       <span className="text-stone-400">
-                        常速 <b className={lowFuel ? 'text-red-400' : 'text-emerald-300'}>{estNorm}</b>油
+                        常速 <b className={lowFuel ? 'text-red-400' : 'text-emerald-300'}>{estNorm}</b>晶
                       </span>
                       <span className="text-stone-400">
-                        全速 <b className="text-amber-300">{estFast}</b>油
+                        全速 <b className="text-amber-300">{estFast}</b>晶
                       </span>
                       {lowFuel && (
                         <span className="inline-flex items-center gap-1 text-red-400 font-sans font-semibold">
-                          <AlertTriangle className="w-3.5 h-3.5" /> 燃料可能不足，建议先探索搜刮或熔炉烧炭
+                          <AlertTriangle className="w-3.5 h-3.5" /> 魔晶可能不足，建议先敲晶脉或用熔炉粗炼
                         </span>
                       )}
                     </div>
@@ -727,7 +727,7 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
     const filtered = CRAFT_RECIPES.filter((rec) => {
       if (craftTab === 'all') return true;
       if (craftTab === 'survival') return ['cooked_food', 'ammo', 'decoy', 'biofuel'].includes(rec.id);
-      if (craftTab === 'train') return ['rail_segment', 'crude_coupler', 'biofuel', 'arcane_fuel'].includes(rec.id);
+      if (craftTab === 'train') return ['rail_segment', 'crude_coupler', 'biofuel'].includes(rec.id);
       return ['upgrade_pickaxe', 'upgrade_saw', 'arcane_potion', 'relic_salvage'].includes(rec.id);
     });
 
@@ -765,7 +765,7 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
                 [
                   ['all', '全部'],
                   ['survival', '生存补给'],
-                  ['train', '铁道燃料'],
+                  ['train', '铁道魔晶'],
                   ['gear', '工具秘法'],
                 ] as const
               ).map(([id, label]) => (
@@ -854,12 +854,11 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
     const scrap = getItemCount(world, 'scrap');
     const bone = getItemCount(world, 'bone');
     const carapace = getItemCount(world, 'carapace');
-    const magic = getItemCount(world, 'magicShard');
     const relic = getItemCount(world, 'ancientRelic');
-    const trophyGain = bone * 4 + carapace * 5 + magic * 8 + relic * 18;
+    const trophyGain = bone * 4 + carapace * 5 + relic * 18;
 
     const offers = [
-      { id: 'buy-fuel', name: '⛽ 锅炉燃料 ×3', desc: '稀缺动力补给', cost: 6 },
+      { id: 'buy-fuel', name: '🔮 魔晶 ×3', desc: '稀缺魔核补给，投入车头锅炉', cost: 6 },
       { id: 'buy-coupler', name: '🔗 正规车钩 ×1', desc: '稳固挂接新车厢，高速无磨损', cost: 14 },
       { id: 'buy-parts', name: '🔩 精密零件 ×2', desc: '炮塔、铁轨与工具升级核心件', cost: 8 },
       { id: 'buy-rail', name: '🛤 铁轨段 ×1', desc: '应急修复断裂地裂', cost: 6 },
@@ -889,7 +888,7 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
               <div>
                 <div className="font-bold text-sm text-amber-200">卖出全部战利品与珍宝</div>
                 <div className="text-xs text-stone-300 mt-0.5">
-                  骨×{bone} · 甲壳×{carapace} · 魔晶×{magic} · 远古造物×{relic}
+                  骨×{bone} · 甲壳×{carapace} · 远古造物×{relic}
                 </div>
               </div>
               <button
@@ -948,10 +947,10 @@ export const Modals: React.FC<ModalsProps> = ({ world, helpOpen, onCloseHelp, ac
               ['WASD + Shift', '无空气墙自由探索 / 冲刺'],
               ['鼠标左键', '挥舞工具 / 射击 / 建造'],
               ['鼠标右键', '拆除建筑 / 背包内旋转物品'],
-              ['E', '开关门 / 添煤 / 交互 / 取提灯'],
+              ['E', '开关门 / 投入魔晶 / 交互 / 取提灯'],
               ['I / R', '网格背包(手动摆放) / 旋转物品'],
               ['Q / F', '降档刹车 / 升档加速'],
-              ['B / Tab', '车厢建造 / 工作台合成'],
+              ['B / Tab', '车厢与车头建造 / 工作台合成'],
               ['1 ~ 6', '快捷栏 (4直接吃喝)'],
               ['L', '开关手提锥形提灯'],
               ['滚轮 / V', '视野缩放 / 重置100%'],

@@ -14,7 +14,6 @@ export type ResourceKey =
   | 'carapace'
   | 'coupler'
   | 'crudeCoupler'
-  | 'magicShard'
   | 'arcanePotion'
   | 'ancientRelic';
 
@@ -36,15 +35,15 @@ export interface ItemMeta {
 export const ITEM_META: Record<ResourceKey, ItemMeta> = {
   fuel: {
     key: 'fuel',
-    name: '锅炉燃料桶',
-    short: '燃料',
-    icon: '⛽',
+    name: '魔晶',
+    short: '魔晶',
+    icon: '🔮',
     maxStack: 10,
     order: 1,
     w: 1,
     h: 2,
     rarity: 'magic',
-    desc: '高热值煤油桶，供蒸汽机车锅炉燃烧推进',
+    desc: '列车魔核的能量结晶。投入车头锅炉驱动行驶，也可炼制魔药或铸造空间行囊。魔核空了列车就停，每站都要再找。',
   },
   wood: {
     key: 'wood',
@@ -56,7 +55,7 @@ export const ITEM_META: Record<ResourceKey, ItemMeta> = {
     w: 2,
     h: 1,
     rarity: 'common',
-    desc: '建造设施、木墙与烧炭的基础建材',
+    desc: '建造设施、木墙与粗炼魔晶的基础建材',
   },
   scrap: {
     key: 'scrap',
@@ -214,25 +213,13 @@ export const ITEM_META: Record<ResourceKey, ItemMeta> = {
     rarity: 'rare',
     desc: '坚韧甲片，可用于强化升级背包或换取高额废料',
   },
-  magicShard: {
-    key: 'magicShard',
-    name: '秘法晶石',
-    short: '魔晶',
-    icon: '🔮',
-    maxStack: 10,
-    order: 16,
-    w: 1,
-    h: 1,
-    rarity: 'unique',
-    desc: '蕴含失落秘法能量，可炼制魔药、秘法燃核与空间行囊',
-  },
   arcanePotion: {
     key: 'arcanePotion',
     name: '秘法魔药',
     short: '魔药',
     icon: '🧪',
     maxStack: 6,
-    order: 17,
+    order: 16,
     w: 1,
     h: 2,
     rarity: 'rare',
@@ -244,7 +231,7 @@ export const ITEM_META: Record<ResourceKey, ItemMeta> = {
     short: '远古造物',
     icon: '🏺',
     maxStack: 3,
-    order: 18,
+    order: 17,
     w: 2,
     h: 2,
     rarity: 'unique',
@@ -290,8 +277,8 @@ export const BACKPACK_TIERS: Record<1 | 2 | 3 | 4, BackpackTierDef> = {
     name: 'Lv.4 秘法空间行囊',
     cols: 12,
     rows: 6,
-    desc: '72 格顶级秘法扩容背包，满载失落世界全部珍宝',
-    cost: { parts: 5, magicShard: 3, ancientRelic: 1 },
+    desc: '72 格顶级秘法扩容背包，以魔晶为媒满载失落世界全部珍宝',
+    cost: { parts: 5, fuel: 3, ancientRelic: 1 },
   },
 };
 

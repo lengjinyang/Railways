@@ -135,23 +135,32 @@ export function drawLocomotiveArt(
   ctx.arc(16, 0, 7, 0, Math.PI * 2);
   ctx.fill();
 
-  // Firebox glowing coal grate (bottom edge facing cab)
+  // Firebox: magic-crystal core grate (bottom edge facing cab)
   const lit = w.boilerFuel > 0;
   const flicker = lit ? 0.8 + Math.sin(t * 11) * 0.18 : 0.2;
-  ctx.fillStyle = '#1d1917';
+  ctx.fillStyle = '#1a1420';
   rrect(ctx, -16, 15, 32, 14, 4);
   ctx.fill();
   if (lit) {
-    const fg = ctx.createRadialGradient(0, 22, 2, 0, 22, 20);
-    fg.addColorStop(0, `rgba(255, 240, 160, ${flicker})`);
-    fg.addColorStop(0.5, `rgba(255, 110, 28, ${flicker * 0.9})`);
-    fg.addColorStop(1, 'rgba(180, 35, 10, 0)');
+    const fg = ctx.createRadialGradient(0, 22, 2, 0, 22, 22);
+    fg.addColorStop(0, `rgba(255, 236, 255, ${flicker})`);
+    fg.addColorStop(0.45, `rgba(196, 92, 255, ${flicker * 0.92})`);
+    fg.addColorStop(1, 'rgba(88, 28, 160, 0)');
     ctx.fillStyle = fg;
     ctx.beginPath();
     ctx.arc(0, 22, 20, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#ff7b29';
+    ctx.fillStyle = '#d0a2ff';
     rrect(ctx, -12, 18, 24, 8, 2);
+    ctx.fill();
+    // Tiny crystal shard sitting in the grate
+    ctx.fillStyle = '#f3e8ff';
+    ctx.beginPath();
+    ctx.moveTo(0, 16);
+    ctx.lineTo(4, 21);
+    ctx.lineTo(0, 26);
+    ctx.lineTo(-4, 21);
+    ctx.closePath();
     ctx.fill();
   }
   // Grate iron bars
@@ -164,14 +173,14 @@ export function drawLocomotiveArt(
     ctx.stroke();
   }
 
-  // Subtle brass boiler fuel plaque
-  ctx.fillStyle = 'rgba(15, 12, 10, 0.78)';
+  // Brass plaque showing magic-core charge
+  ctx.fillStyle = 'rgba(18, 12, 24, 0.82)';
   rrect(ctx, -28, -42, 56, 15, 4);
   ctx.fill();
-  ctx.fillStyle = lit ? '#ffd884' : '#ff8787';
+  ctx.fillStyle = lit ? '#e7d4ff' : '#ff8787';
   ctx.font = 'bold 10px "Inter", "PingFang SC", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(`🔥 ${w.boilerFuel.toFixed(1)}`, 0, -31);
+  ctx.fillText(`🔮 ${w.boilerFuel.toFixed(1)}`, 0, -31);
   ctx.restore();
 
   // --- Ornate Brass Throttle Console (x=136, y=0) ---
@@ -311,7 +320,7 @@ export function drawLocomotiveArt(
   ctx.fillStyle = '#b87d2e';
   rrect(ctx, -4, -9, 11, 18, 3);
   ctx.fill();
-  ctx.fillStyle = w.boilerFuel > 0 ? '#fff3c4' : '#4a453f';
+  ctx.fillStyle = w.boilerFuel > 0 ? '#f3e8ff' : '#4a453f';
   ctx.fillRect(6, -6, 3, 12);
   ctx.restore();
 
@@ -1198,26 +1207,37 @@ export function drawPropArt(ctx: CanvasRenderingContext2D, w: WorldState, pr: Wo
     ctx.beginPath();
     ctx.arc(-6, 5, 5, 0, Math.PI * 2);
     ctx.fill();
-  } else if (pr.kind === 'fuel_barrel') {
-    const bg = ctx.createRadialGradient(-4, -4, 2, 0, 0, pr.r);
-    bg.addColorStop(0, flash ? '#fff' : '#e04838');
-    bg.addColorStop(1, flash ? '#fff' : '#7d1c14');
-    ctx.fillStyle = bg;
+  } else if (pr.kind === 'crystal_cluster') {
+    const pulse = 1 + Math.sin(t * 4.2) * 0.08;
+    const halo = ctx.createRadialGradient(0, 0, 2, 0, 0, pr.r * 1.7 * pulse);
+    halo.addColorStop(0, 'rgba(230, 190, 255, 0.75)');
+    halo.addColorStop(1, 'rgba(120, 40, 200, 0)');
+    ctx.fillStyle = halo;
     ctx.beginPath();
-    ctx.arc(0, 0, pr.r, 0, Math.PI * 2);
+    ctx.arc(0, 0, pr.r * 1.7 * pulse, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#ffd56b';
-    ctx.lineWidth = 2.4;
-    ctx.stroke();
-    ctx.strokeStyle = '#33100d';
-    ctx.lineWidth = 1.5;
+    const drawShard = (sx: number, sy: number, h: number, lean: number, fill: string) => {
+      ctx.fillStyle = flash ? '#fff' : fill;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - h);
+      ctx.lineTo(sx + 6 + lean, sy + 2);
+      ctx.lineTo(sx + 2, sy + h * 0.55);
+      ctx.lineTo(sx - 6, sy + 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#f8f0ff';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+    };
+    drawShard(-7, 2, 14, -1, '#9d4edd');
+    drawShard(6, 4, 11, 2, '#c77dff');
+    drawShard(0, -1, 18, 0, '#e0aaff');
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
     ctx.beginPath();
-    ctx.arc(0, 0, pr.r - 4.5, 0, Math.PI * 2);
-    ctx.stroke();
-    // Bung cap
-    ctx.fillStyle = '#2b2d30';
-    ctx.beginPath();
-    ctx.arc(5, -4, 3, 0, Math.PI * 2);
+    ctx.moveTo(0, -18);
+    ctx.lineTo(3, -6);
+    ctx.lineTo(-1, -5);
+    ctx.closePath();
     ctx.fill();
   } else if (pr.kind === 'parts_box') {
     const g = ctx.createLinearGradient(-18, -14, 18, 14);

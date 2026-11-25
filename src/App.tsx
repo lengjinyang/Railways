@@ -483,11 +483,10 @@ export const App: React.FC = () => {
       if (t === 'sell-trophy') {
         const bone = getItemCount(w, 'bone');
         const car = getItemCount(w, 'carapace');
-        const magic = getItemCount(w, 'magicShard');
         const relic = getItemCount(w, 'ancientRelic');
-        if (bone + car + magic + relic > 0) {
-          spendCost(w, { bone, carapace: car, magicShard: magic, ancientRelic: relic });
-          giveItem(w, 'scrap', bone * 4 + car * 5 + magic * 8 + relic * 18);
+        if (bone + car + relic > 0) {
+          spendCost(w, { bone, carapace: car, ancientRelic: relic });
+          giveItem(w, 'scrap', bone * 4 + car * 5 + relic * 18);
           sfx.pickup();
         }
       } else if (t === 'buy-fuel' && canAffordCost(w, { scrap: 6 })) {
