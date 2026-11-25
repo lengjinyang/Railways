@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --brass: #d9933c;
+    --brass-bright: #ffd670;
+    --brass-dim: rgba(217, 147, 60, 0.35);
+    --iron-950: #0c0a09;
+    --iron-900: #161311;
+    --iron-800: #221d19;
+    --iron-700: #332b24;
+    --ember: #ff6b2b;
+    --danger: #ef4444;
+    --ok: #59c973;
+  }
+
+  * {
+    box-sizing: border-box;
+    user-select: none;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #0c0a09;
+    color: #f2eadc;
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  }
+}
+
+/* Diegetic Industrial Brass Panel */
+.brass-panel {
+  background: linear-gradient(180deg, rgba(24, 20, 17, 0.92) 0%, rgba(14, 12, 10, 0.94) 100%);
+  border: 1px solid rgba(217, 147, 60, 0.38);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 222, 150, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(10px);
+}
+
+.brass-panel-strong {
+  background: linear-gradient(180deg, rgba(28, 23, 19, 0.96) 0%, rgba(16, 13, 11, 0.98) 100%);
+  border: 1px solid rgba(235, 168, 72, 0.52);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 224, 150, 0.22);
+  backdrop-filter: blur(14px);
+}
+
+.brass-btn {
+  background: linear-gradient(180deg, rgba(42, 35, 29, 0.94) 0%, rgba(25, 21, 18, 0.96) 100%);
+  border: 1px solid rgba(217, 147, 60, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 230, 180, 0.1);
+  transition: all 140ms ease;
+}
+
+.brass-btn:hover:not(:disabled) {
+  border-color: rgba(255, 214, 112, 0.78);
+  background: linear-gradient(180deg, rgba(64, 51, 38, 0.96) 0%, rgba(38, 30, 22, 0.98) 100%);
+  transform: translateY(-1px);
+}
+
+.brass-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.brass-btn-primary {
+  background: linear-gradient(180deg, #e7a043 0%, #bd7422 100%);
+  color: #16100a;
+  border: 1px solid #ffd884;
+  box-shadow:
+    0 4px 16px rgba(217, 147, 60, 0.35),
+    inset 0 1px 0 rgba(255, 245, 215, 0.55);
+  transition: all 140ms ease;
+}
+
+.brass-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #f3b155 0%, #cf822b 100%);
+  box-shadow:
+    0 6px 22px rgba(240, 165, 65, 0.5),
+    inset 0 1px 0 rgba(255, 248, 225, 0.7);
+  transform: translateY(-1px);
+}
+
+.brass-btn-primary:disabled,
+.brass-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.gauge-track {
+  background: linear-gradient(180deg, #0b0908 0%, #1d1814 100%);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+@keyframes pulse-danger {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 18px 2px rgba(239, 68, 68, 0.65);
+  }
+}
+
+.animate-danger-glow {
+  animation: pulse-danger 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer-border {
+  0%, 100% {
+    border-color: rgba(255, 214, 112, 0.45);
+  }
+  50% {
+    border-color: rgba(255, 214, 112, 0.92);
+  }
+}
+
+.animate-quest-glow {
+  animation: shimmer-border 2.6s ease-in-out infinite;
+}
+
+/* Custom sleek scrollbars for modals */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(12, 10, 9, 0.7);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(217, 147, 60, 0.45);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 214, 112, 0.75);
+}
