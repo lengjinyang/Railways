@@ -1,67 +1,84 @@
 import React from 'react';
-import { Flame, TrainFront, Compass, ChevronRight, FastForward } from 'lucide-react';
+import { ArrowRight, FastForward, Play } from 'lucide-react';
+import type { SaveSummary } from '../world';
 
 interface TitlePrologueProps {
   step: number;
+  saveSummary: SaveSummary | null;
+  onContinueSave: () => void;
   onNext: () => void;
   onSkip: () => void;
 }
 
 const PROLOGUE_BEATS = [
   {
-    tag: '序章 · 01 / 03',
-    title: '神父的预言',
-    subtitle: 'THE PRIEST’S PROPHECY',
+    numeral: 'I',
+    title: '无声的神谕',
+    subtitle: 'The Silent Oracle',
     body: [
-      '潮湿阴冷的教堂里，年迈的神父一次次按着你的肩膀，絮絮叨叨地说着同样的话：“孩子，记住你的血脉……旧日的灾难正在苏醒，唯有你是这个世界的救世主。”',
-      '你原本只当那是老人日复一日的呓语。',
+      '主教在没有经文的礼拜堂里叫住了你——一名常年在锈铁堆间翻找旧零件的无名拾荒者。',
+      '他没有提起过往，也没有称你为救世主，只是把一串冰冷的黄铜钥匙放进你的掌心：“神谕落在了你的名字上。沿着铁轨往前走。”',
     ],
-    btn: '继续阅读',
+    btn: '继续',
   },
   {
-    tag: '序章 · 02 / 03',
-    title: '陷落之夜与破旧蒸汽列车',
-    subtitle: 'NIGHT OF THE FALL',
+    numeral: 'II',
+    title: '没有历史的世界',
+    subtitle: 'A World Without History',
     body: [
-      '直到那个血月当空的夜晚，城墙在嘶吼声中轰然倒塌，整座城市一夜之间被怪物撕碎。',
-      '钟楼废墟下，弥留之际的神父将一把沾满煤灰的钥匙塞进你的掌心，指向站台尽头那辆破旧的蒸汽列车：“快上车逃出去……整个世界都已被怪物侵占，活下来！”',
+      '没有人记得世界是在哪一年破败的。留存下来的书都只剩前半本，荒原上的石碑被人逐块凿平，连站台上的墙历都停在同一张没有年份的纸页。',
+      '雾气尽头，一列炉膛里燃着冷蓝火焰的旧蒸汽机车正发出低沉的鸣响。站台之外，再也见不到正常的人类。',
     ],
-    btn: '拉响汽笛，冲出火海',
+    btn: '登上列车',
   },
   {
-    tag: '序章 · 03 / 03',
-    title: '驶离大城，奔向流放之地',
-    subtitle: 'ESCAPE INTO THE WASTELAND',
+    numeral: 'III',
+    title: '启程',
+    subtitle: 'Departure',
     body: [
-      '蒸汽机车已启动，正缓缓驶离燃烧的大城市郊区——穿过这段破败的城区铁道后，你将正式踏入【流放之地 · 危险等级 I】，直面失去人性的强盗与怪物。',
-      '车头挂着一盏手提灯（按 E 取下，L 开关），夜晚仅能照亮短距锥形视野；若没带提灯且离列车越远，暗处怪物会越多且越强！每站资源有限，升级铁镐与切割锯以破开深处金库；发车前务必选定下一站并备足燃料。',
+      '每次到站都会自动记录站点存档。你可以按自己的节奏在站内搜刮、清剿巢穴、改造车厢——但每座站点的物资终有尽头。',
+      '翻开行囊、搜刮箱子或站在工作台前制作时，世界不会停下脚步。备足干粮、净水与晶石，再扳动车头的拉杆。',
     ],
-    btn: '驾驶蒸汽列车，驶入荒原',
+    btn: '进入荒原',
   },
 ];
 
-export const TitlePrologue: React.FC<TitlePrologueProps> = ({ step, onNext, onSkip }) => {
+const CONTROLS: Array<[string, string]> = [
+  ['WASD', '移动 · Shift 冲刺'],
+  ['左键', '挥击 · 射击 · 建造'],
+  ['E', '交互 · 长按搜刮/存箱'],
+  ['Tab', '行囊 · 笔记 · 图鉴'],
+  ['B / M', '建造 · 航线图'],
+  ['1–6', '快捷栏 · Esc 菜单'],
+];
+
+function formatSavedAgo(savedAt: number): string {
+  const min = Math.floor((Date.now() - savedAt) / 60000);
+  if (min < 1) return '刚刚保存';
+  if (min < 60) return `${min} 分钟前保存`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} 小时前保存`;
+  return `${Math.floor(h / 24)} 天前保存`;
+}
+
+export const TitlePrologue: React.FC<TitlePrologueProps> = ({ step, saveSummary, onContinueSave, onNext, onSkip }) => {
   const beat = PROLOGUE_BEATS[Math.min(step, PROLOGUE_BEATS.length - 1)];
   const isLast = step >= PROLOGUE_BEATS.length - 1;
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center p-4 bg-gradient-to-b from-black/75 via-black/45 to-black/80 backdrop-blur-[2px]">
-      <div className="brass-panel-strong relative w-full max-w-2xl rounded-2xl p-7 md:p-8 overflow-hidden">
-        {/* Decorative ember top glow */}
-        <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-96 h-40 rounded-full bg-amber-500/20 blur-3xl" />
+    <div className="fixed inset-0 z-30 overflow-hidden anim-fade-in">
+      {/* Atmosphere: darken the left reading column, let the train breathe on the right */}
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgb(8_7_6/0.94)_0%,rgb(8_7_6/0.82)_38%,rgb(8_7_6/0.35)_70%,rgb(8_7_6/0.55)_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_72%_50%,transparent_0%,transparent_35%,rgb(0_0_0/0.55)_100%)]" />
+      <div className="pointer-events-none absolute -left-40 top-1/3 w-[640px] h-[420px] rounded-full bg-rune/[0.07] blur-[110px]" />
 
-        {/* Header Row */}
-        <div className="relative flex items-center justify-between gap-4 mb-5">
-          <div className="flex items-center gap-2.5">
-            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-400/40 text-amber-300">
-              {step === 0 ? <Compass className="w-4 h-4" /> : step === 1 ? <Flame className="w-4 h-4" /> : <TrainFront className="w-4 h-4" />}
-            </span>
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.2em] text-amber-300/80 font-semibold">
-                《第一幕·荒原》 RAILWAYS
-              </div>
-              <div className="text-xs text-stone-400">{beat.tag}</div>
-            </div>
+      {/* Letterbox — top */}
+      <div className="absolute inset-x-0 top-0 h-[9vh] min-h-14 bg-black flex items-end">
+        <div className="w-full flex items-center justify-between px-[6vw] pb-3">
+          <div className="flex items-center gap-3">
+            <span className="display text-[13px] tracking-[0.5em] text-brass-hi/90">RAILWAYS</span>
+            <span className="h-3 w-px bg-brass/30" />
+            <span className="text-[11px] tracking-[0.18em] text-ash">第一幕 · 荒原</span>
           </div>
           {!isLast && (
             <button
@@ -70,68 +87,128 @@ export const TitlePrologue: React.FC<TitlePrologueProps> = ({ step, onNext, onSk
                 e.stopPropagation();
                 onSkip();
               }}
-              className="brass-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-stone-300 cursor-pointer relative z-10"
+              className="btn-ghost px-2.5 py-1 text-[11px] tracking-wider relative z-10"
             >
-              <FastForward className="w-3.5 h-3.5" />
               跳过序章
+              <FastForward className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
+      </div>
 
-        {/* Title */}
-        <div className="relative mb-5">
-          <div className="text-[10px] tracking-[0.26em] text-amber-400/70 font-mono mb-1">
-            {beat.subtitle}
+      {/* Story column */}
+      <div className="absolute inset-y-[9vh] left-0 w-full max-w-[720px] flex items-center px-[6vw]">
+        <div key={step} className="w-full">
+          <div className="anim-rise-in flex items-baseline gap-4 mb-5">
+            <span className="display text-[64px] leading-none text-brass/25 tracking-normal select-none">
+              {beat.numeral}
+            </span>
+            <span className="eyebrow">{beat.subtitle}</span>
           </div>
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-amber-100">
+
+          <h1
+            className="anim-rise-in display text-[40px] md:text-[46px] leading-[1.1] text-parchment text-engraved tracking-[0.12em]"
+            style={{ animationDelay: '60ms' }}
+          >
             {beat.title}
           </h1>
-        </div>
 
-        {/* Narrative Body */}
-        <div className="relative space-y-3.5 text-sm md:text-[15px] leading-relaxed text-stone-200/95 mb-6">
-          {beat.body.map((para, i) => (
-            <p key={i}>{para}</p>
-          ))}
-        </div>
-
-        {/* Keybinding Strip on final beat */}
-        {isLast && (
-          <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-xl bg-black/45 border border-amber-500/20 text-xs text-stone-300">
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">WASD</kbd> 移动/冲刺</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">E</kbd> 交互/开关门</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">B</kbd> 车厢建造</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">I / Tab</kbd> 背包/合成</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">Q / F</kbd> 刹车/升档</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">L</kbd> 开关提灯</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">V</kbd> 重置视野</div>
-            <div><kbd className="px-1.5 py-0.5 rounded bg-stone-800 border border-stone-600 text-amber-300 font-mono">滚轮</kbd> 视野缩放</div>
+          <div className="anim-rise-in mt-6 mb-7 flex items-center gap-2" style={{ animationDelay: '120ms' }}>
+            <span className="h-px w-16 bg-gradient-to-r from-brass to-brass/0" />
+            <span className="w-1 h-1 rotate-45 bg-brass/70" />
           </div>
-        )}
 
-        {/* Progress Dots + Action CTA */}
-        <div className="relative flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            {PROLOGUE_BEATS.map((_, idx) => (
-              <span
-                key={idx}
-                className={`h-1.5 rounded-full transition-all duration-300 ${
-                  idx === step ? 'w-8 bg-amber-400' : idx < step ? 'w-3 bg-amber-600/80' : 'w-2 bg-stone-700'
-                }`}
-              />
+          <div className="space-y-4 max-w-[34em]">
+            {beat.body.map((para, i) => (
+              <p
+                key={i}
+                className="anim-rise-in text-[15px] leading-[1.95] text-parchment-dim"
+                style={{ animationDelay: `${180 + i * 90}ms` }}
+              >
+                {para}
+              </p>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNext();
-            }}
-            className="brass-btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm cursor-pointer relative z-10"
+
+          {isLast && (
+            <div
+              className="anim-rise-in mt-7 grid grid-cols-2 gap-x-6 gap-y-2.5 max-w-[30em]"
+              style={{ animationDelay: '380ms' }}
+            >
+              {CONTROLS.map(([k, d]) => (
+                <div key={k} className="flex items-center gap-2.5 text-[12px] text-ash">
+                  <span className="kbd w-14">{k}</span>
+                  <span>{d}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div
+            className="anim-rise-in mt-9 flex flex-wrap items-center gap-3"
+            style={{ animationDelay: isLast ? '460ms' : '360ms' }}
           >
-            {beat.btn}
-            <ChevronRight className="w-4 h-4" />
-          </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNext();
+              }}
+              className="btn-primary group px-6 py-2.5 text-sm tracking-[0.12em] relative z-10"
+            >
+              {beat.btn}
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+            </button>
+
+            {saveSummary && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onContinueSave();
+                }}
+                className="btn px-4 py-2 text-left relative z-10"
+              >
+                <Play className="w-3.5 h-3.5 text-brass-hi" />
+                <span className="flex flex-col leading-tight">
+                  <span className="text-[12.5px] text-parchment font-semibold">继续旅程 · {saveSummary.stationName}</span>
+                  <span className="text-[10.5px] text-ash font-mono">
+                    第 {saveSummary.dayCount} 天 · {saveSummary.totalDistance}m · {saveSummary.flatbedCount} 节车厢 · {formatSavedAgo(saveSummary.savedAt)}
+                  </span>
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Letterbox — bottom */}
+      <div className="absolute inset-x-0 bottom-0 h-[9vh] min-h-14 bg-black flex items-start">
+        <div className="w-full flex items-center justify-between px-[6vw] pt-3.5">
+          <div className="flex items-center gap-2.5">
+            {PROLOGUE_BEATS.map((b, idx) => (
+              <React.Fragment key={idx}>
+                {idx > 0 && (
+                  <span
+                    className={`h-px w-10 transition-colors duration-500 ${idx <= step ? 'bg-brass/70' : 'bg-white/10'}`}
+                  />
+                )}
+                <span
+                  className={`display text-[11px] tracking-widest transition-colors duration-500 ${
+                    idx === step ? 'text-brass-hi' : idx < step ? 'text-brass/60' : 'text-ash-dim'
+                  }`}
+                >
+                  {b.numeral}
+                </span>
+              </React.Fragment>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-ash-dim">
+            <span className="kbd">Space</span>
+            <span>或</span>
+            <span className="kbd">Enter</span>
+            <span>继续</span>
+          </div>
         </div>
       </div>
     </div>
