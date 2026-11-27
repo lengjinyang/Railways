@@ -255,10 +255,15 @@ export const BUILD_ORDER: BuildingType[] = [
   'lantern',
   'wood_wall',
   'door',
-  'turret',
-  'bumper',
   'crystal_pylon',
 ];
+
+/**
+ * Q12: the train does not fight in the demo — no on-board defences (turrets, rams).
+ * Definitions stay so they can be switched back on after playtesting; they just can't be built,
+ * and older saves have them taken down on load (see save.ts).
+ */
+export const DEMO_DISABLED_BUILDINGS: ReadonlySet<BuildingType> = new Set<BuildingType>(['turret', 'bumper']);
 
 export type CraftFacility = 'workbench' | 'campfire' | 'filter';
 

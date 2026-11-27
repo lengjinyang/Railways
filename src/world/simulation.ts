@@ -8,7 +8,9 @@ import {
 } from '../inventory';
 import { BUILDINGS, CRAFT_RECIPES } from '../recipes_v2';
 import { sfx } from '../sfx';
-import { loadStationSnapshot, saveStationSnapshot, saveWorld } from './save';
+import { moveBoarderInsideForLoot, updateBoarders } from './boarding';
+import { meetWaver, planRoadEvents, updateRoadEvents, updateStranger } from './roadEvents';
+import { clearSuspend, loadStationSnapshot, saveStationSnapshot } from './save';
 import {
   BED_REST_HOURS,
   CITY_ESCAPE_METERS,
@@ -21,6 +23,13 @@ import {
   GEAR_SPEEDS,
   HALF_H,
   HUNGER_DRAIN_PER_SEC,
+  DEATH_BACKPACK_STACK_LOSS,
+  GUARD_REGEN_FRACTION,
+  GUARD_SIEGE_SECONDS,
+  GUARD_WAKE_RADIUS,
+  UNCOUPLE_HOLD_DURATION,
+  DEATH_CAR_LOSS_CHANCE,
+  DEATH_CHEST_STACK_LOSS,
   LOCO_COLS,
   LOCO_W,
   MELEE_META,
@@ -48,6 +57,14 @@ import {
 } from './types';
 import {
   addFloat,
+  getCarriageIntegrity,
+  uncoupleFrom,
+  removeCarriageAt,
+  describeSupplyForecast,
+  getDailyUpkeepScrap,
+  getSupplyForecast,
+  getIdleFuelPerSec,
+  payCarriageUpkeep,
   canAcceptItem,
   canAffordCost,
   createCarHull,
@@ -132,9 +149,20 @@ export function getNotebookThoughts(w: WorldState): NotebookThoughts {
   else if (w.vineSnare > 20) shortTerm = '青藤缠住了车轮。得下车拿工具或斧头把藤蔓砍开。';
   else if (w.boilerPressure > 85) shortTerm = '炉压表指针偏红了，赶紧去车头放气。';
   else if (w.mode === 'city_escape') shortTerm = '机车正在驶出灰烬教区。等停稳后下车搜刮第一批木材、废料与晶石。';
+  else if (w.mode === 'station' && w.monsters.some((m) => m.guard && m.hp > 0)) {
+    const g = w.monsters.find((m) => m.guard && m.hp > 0)!;
+    shortTerm = g.guard!.asleep
+      ? `出站的铁轨上睡着一只${g.title ?? '守关者'}。不打倒它，列车开不出去——先搜刮整备，挑好时机再去叫醒它。`
+      : `${g.title ?? '守关者'}醒着。打不过就退回车上，它撞一阵车就会回铁轨上去。`;
+  }
   else if (crystal < 4) shortTerm = '炉膛里的蓝火快灭了，得在站台或废墟里找更多秘法晶石。';
   else if (water < 3 || p.thirst < 35) shortTerm = '水不多了。得找水塔、接雨水煮沸，或者装个过滤桶。';
   else if (food < 2 || p.hunger < 35) shortTerm = '肚子开始发紧。得把生食烤熟，或在车厢里建个种植箱。';
+  else if (w.mode === 'station' && getSupplyForecast(w).days < 1) {
+    shortTerm = `停着也在烧炉子、耗废料。${describeSupplyForecast(w)}。要么在站里补上，要么趁早动身。`;
+  } else if (getItemCount(w, 'scrap') < getDailyUpkeepScrap(w)) {
+    shortTerm = `废料不够明早的车厢维护（每天 ${getDailyUpkeepScrap(w)}），不补的车厢外壳会一点点锈坏。`;
+  }
 
   let midTerm = '继续收集铜线、零件与兽皮，把车厢里的设施升到二阶。';
   if (!hasWorkbench(w)) midTerm = '空车厢里什么都没有。先按 B 建一张木工作台与储物木箱。';
@@ -220,6 +248,7 @@ export function createInitialWorld(): WorldState {
     stationBarriers: [],
 
     lastSleepDay: 0,
+    lastUpkeepDay: 1,
     stomachGrowlCd: 0,
     heartbeatCd: 0,
     lastVitalChangeAt: 0,
@@ -369,8 +398,33 @@ export function continueEndless(w: WorldState): void {
   sfx.whistle();
 }
 
-/** Rollback cleanly to the most recent station arrival checkpoint on death (#5: no random carriage loss!). */
-export function rollbackToStationSave(currentWorld: WorldState): WorldState {
+/**
+ * Death losses applied to the station checkpoint (design §6): maybe the carriage at risk,
+ * a share of the backpack, a little from the chests. Returns what was lost, for the arrival banner.
+ */
+export function applyDeathLosses(w: WorldState, lossCarIdx: number | null, rng: () => number = Math.random): string[] {
+  const lost: string[] = [];
+  if (lossCarIdx !== null && lossCarIdx >= 1 && lossCarIdx < w.flatbeds.length && rng() < DEATH_CAR_LOSS_CHANCE) {
+    removeCarriageAt(w, lossCarIdx);
+    lost.push(`第 ${lossCarIdx + 1} 节车厢`);
+  }
+  const counts = new Map<ResourceKey, number>();
+  const dropFrom = (slots: Array<{ key: ResourceKey; count: number } | null>, chance: number) => {
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i];
+      if (!s || s.count <= 0 || rng() >= chance) continue;
+      counts.set(s.key, (counts.get(s.key) ?? 0) + s.count);
+      slots[i] = null;
+    }
+  };
+  dropFrom(w.backpack.slots, DEATH_BACKPACK_STACK_LOSS);
+  for (const grid of getAllChestGrids(w)) dropFrom(grid.slots, DEATH_CHEST_STACK_LOSS);
+  for (const [k, n] of counts) lost.push(`${ITEM_META[k].name} ×${n}`);
+  return lost;
+}
+
+/** Rollback to the most recent station arrival checkpoint on death, minus the death losses. */
+export function rollbackToStationSave(currentWorld: WorldState, rng: () => number = Math.random): WorldState {
   const deaths = currentWorld.stats.deaths;
   const snap = loadStationSnapshot();
   if (snap) {
@@ -380,6 +434,15 @@ export function rollbackToStationSave(currentWorld: WorldState): WorldState {
     snap.player.alive = true;
     snap.player.hp = snap.player.maxHp;
     snap.player.invulnTimer = 2.0;
+    const lost = applyDeathLosses(snap, currentWorld.deathReport?.lossCarIdx ?? null, rng);
+    snap.zoneBanner = {
+      title: `回到 ${snap.stationName}`,
+      subtitle: lost.length > 0 ? `丢失：${lost.join('、')}` : '这一次，什么也没有丢。',
+      color: '#d96c5b',
+      timer: 7,
+    };
+    // The checkpoint now reflects the loss, so reloading can't bring the lost things back.
+    saveStationSnapshot(snap);
     return snap;
   }
   const fresh = createInitialWorld();
@@ -746,6 +809,8 @@ function damageMonster(w: WorldState, m: MonsterEntity, dmg: number, kbX: number
   m.vx += kbX;
   m.vy += kbY;
   if (m.aiState === 'wander' || m.aiState === 'alert') m.aiState = 'chase';
+  if (m.guard && (m.guard.asleep || m.guard.returning)) wakeGuard(w, m);
+  if (m.boss && m.hp > 0) advanceBossPhase(w, m);
   w.shake = Math.max(w.shake, 3.0);
   sfx.hitFlesh();
   spawnParticles(w, m.x, m.y, '#cc554c', 7, 130);
@@ -758,6 +823,7 @@ function damageMonster(w: WorldState, m: MonsterEntity, dmg: number, kbX: number
   }
 
   if (m.hp <= 0) {
+    moveBoarderInsideForLoot(w, m);
     w.stats.monstersKilled++;
     spawnParticles(w, m.x, m.y, '#cc554c', 16, 165);
     // H2 useful drops
@@ -783,9 +849,10 @@ function damageMonster(w: WorldState, m: MonsterEntity, dmg: number, kbX: number
       if (Math.random() < 0.5) spawnPickup(w, 'scrap', 3, m.x - 8, m.y, m.onTrain);
     }
     // nightwalker drops nothing (H2)
+    if (m.guard) onExitGuardDefeated(w, m);
     if (m.elite) {
       w.stats.elitesKilled = (w.stats.elitesKilled ?? 0) + 1;
-      addFloat(w, m.x, m.y - 30, '巢穴守卫倒下', '#f3d58f');
+      if (!m.guard) addFloat(w, m.x, m.y - 30, '巢穴守卫倒下', '#f3d58f');
       spawnPickup(w, 'scrap', 3 + Math.floor(Math.random() * 3), m.x - 10, m.y + 6, m.onTrain);
       spawnPickup(w, m.kind === 'clinger' || m.kind === 'sandworm' ? 'carapace' : 'hide', 2, m.x + 10, m.y - 6, m.onTrain);
       spawnPickup(w, 'bone', 2, m.x, m.y + 12, m.onTrain);
@@ -793,6 +860,63 @@ function damageMonster(w: WorldState, m: MonsterEntity, dmg: number, kbX: number
       if (Math.random() < 0.35) spawnPickup(w, 'magicShard', 1, m.x - 12, m.y - 10, m.onTrain);
       if (Math.random() < 0.5) spawnPickup(w, 'ammo', 2, m.x, m.y - 14, m.onTrain);
     }
+  }
+}
+
+function wakeGuard(w: WorldState, m: MonsterEntity): void {
+  if (!m.guard) return;
+  const wasAsleep = m.guard.asleep;
+  m.guard.asleep = false;
+  m.guard.returning = false;
+  m.guard.pressure = 0;
+  m.aiState = 'chase';
+  if (wasAsleep) {
+    sfx.omenHowl();
+    w.shake = Math.max(w.shake, m.boss ? 12 : 6);
+    spawnParticles(w, m.x, m.y, '#e6a04c', m.boss ? 24 : 12, 150);
+  }
+}
+
+/** BOSS phases: at 2/3 and 1/3 hp it calls in a pack and gets faster and meaner. */
+function advanceBossPhase(w: WorldState, m: MonsterEntity): void {
+  if (!m.boss) return;
+  const ratio = m.hp / m.maxHp;
+  const target = ratio < 1 / 3 ? 2 : ratio < 2 / 3 ? 1 : 0;
+  if (target <= m.boss.phase) return;
+  m.boss.phase = target;
+  const count = 2 + target;
+  for (let i = 0; i < count; i++) {
+    const a = (Math.PI * 2 * i) / count + Math.random() * 0.5;
+    w.monsters.push(createMonster(pickZoneEnemyKind(w.zoneKind, w.zoneTier), m.x + Math.cos(a) * 140, m.y + Math.sin(a) * 110, false, w.zoneTier));
+  }
+  m.speed *= 1.18;
+  m.dps = +(m.dps * 1.12).toFixed(1);
+  w.shake = Math.max(w.shake, 12);
+  sfx.omenHowl();
+  spawnParticles(w, m.x, m.y, '#e07a50', 26, 190);
+  addFloat(w, m.x, m.y - m.r - 26, target === 1 ? '它在召唤同伴' : '它彻底狂暴了', '#f0a69b', 1.8);
+}
+
+/** The exit track is clear: the boiler builds pressure and the train can pull out past the carcass. */
+function onExitGuardDefeated(w: WorldState, m: MonsterEntity): void {
+  w.boilerPressure = Math.max(w.boilerPressure, 55);
+  sfx.questDone();
+  spawnPickup(w, 'parts', 2, m.x - 14, m.y - 8, false);
+  spawnPickup(w, 'magicShard', 2, m.x + 14, m.y - 8, false);
+  if (m.boss) {
+    w.stats.bossesKilled = (w.stats.bossesKilled ?? 0) + 1;
+    spawnPickup(w, 'ancientRelic', 1, m.x, m.y + 14, false);
+    spawnPickup(w, 'coupler', 1, m.x - 18, m.y + 10, false);
+    spawnPickup(w, 'parts', 4, m.x + 18, m.y + 10, false);
+    spawnPickup(w, 'magicShard', 3, m.x, m.y - 18, false);
+    w.zoneBanner = {
+      title: '第一幕 · 终',
+      subtitle: '铁闸之主倒在出站的铁轨上。锅炉重新升压，铁轨向旧城带延伸。',
+      color: '#f3d58f',
+      timer: 7,
+    };
+  } else {
+    addFloat(w, m.x, m.y - 30, '守关者倒下 · 出站铁轨已清空', '#f3d58f', 2.2);
   }
 }
 
@@ -930,12 +1054,30 @@ export function handlePlayerDeath(w: WorldState, cause = '重伤倒下'): void {
   w.openContainerUid = null;
   w.openFacilityUid = null;
   w.player.alive = false;
+  clearSuspend(); // a death can't be dodged by reloading a suspend save
+
+  // The carriage at risk: the one you fell in, else the most battered one. Never the first.
+  let lossCarIdx: number | null = null;
+  const here = getCarIndexAtPoint(w, w.player.x, w.player.y);
+  if (here !== null && here >= 1) {
+    lossCarIdx = here;
+  } else if (w.flatbeds.length >= 2) {
+    let worst = Infinity;
+    for (let i = 1; i < w.flatbeds.length; i++) {
+      const integ = getCarriageIntegrity(w, i);
+      if (integ <= worst) {
+        worst = integ;
+        lossCarIdx = i;
+      }
+    }
+  }
 
   const snap = loadStationSnapshot();
   w.deathReport = {
     deathNum: w.stats.deaths,
     rollbackStationName: snap?.stationName ?? '上一站点',
     cause,
+    lossCarIdx,
   };
   sfx.crash();
   w.shake = 14;
@@ -979,6 +1121,23 @@ function updateActiveHint(w: WorldState, input?: InputState): void {
         startRailLayHold(w);
       },
     });
+  }
+
+  // 1b. Uncouple: hold E at a coupler (not the core carriage's) to cut everything behind it loose
+  for (let i = 1; i < w.flatbeds.length; i++) {
+    const cx = getCarBounds(i).right + COUPLER_GAP / 2;
+    if (Math.hypot(px - cx, py) < 40) {
+      const n = w.flatbeds.length - i;
+      offer({
+        x: cx,
+        y: -46,
+        tx: cx,
+        ty: 0,
+        label: `按住 E 脱钩 · 甩掉后面 ${n} 节车厢（车上的东西一起丢）`,
+        holdAction: { kind: 'uncouple', carIdx: i, x: cx, y: -58, label: '松开车钩', duration: UNCOUPLE_HOLD_DURATION },
+        action: () => {},
+      });
+    }
   }
 
   // 2. Locomotive Throttle Lever (only place to change gear! D/U8)
@@ -1409,30 +1568,25 @@ function updateActiveHint(w: WorldState, input?: InputState): void {
     }
 
     if (prop.kind === 'roadside_waver') {
+      // A choice, not a lucky dip: hand over a cooked meal. Usually kindness (it pays you back
+      // and is remembered further down the line), sometimes bait for an ambush.
+      const hasMeal = getItemCount(w, 'cookedFood') > 0;
       offer({
         x: prop.x,
         tx: prop.x,
         ty: prop.y,
         y: prop.y - 34,
-        label: 'E 靠近路边的变异拾荒者',
+        label: hasMeal ? 'E 递给路边的变异者一份熟食' : '路边的变异者盯着你的口袋（需一份熟食）',
         action: () => {
+          if (!hasMeal) {
+            sfx.gridDeny();
+            return;
+          }
           prop.used = true;
-          if (Math.random() < 0.65) {
-            giveItem(w, 'water', 2, true, { x: prop.x, y: prop.y });
-            giveItem(w, 'parts', 1, true, { x: prop.x, y: prop.y });
-            recordCodex(
-              w,
-              `waver_${Math.floor(w.totalDistance)}`,
-              '路边的变异者',
-              '它喉咙里发出含糊的音节，把两壶清水和零件递进车厢，随即转身走进雾里。'
-            );
+          spendCost(w, { cookedFood: 1 });
+          if (meetWaver(w, prop.x, prop.y) === 'helped') {
+            giveItem(w, 'parts', 2, true, { x: prop.x, y: prop.y });
             sfx.pickup();
-          } else {
-            w.monsters.push(
-              createMonster('mutant_raider', prop.x + 25, prop.y - 40, false, w.zoneTier),
-              createMonster('hound', prop.x - 30, prop.y + 45, false, w.zoneTier)
-            );
-            sfx.omenHowl();
           }
         },
       });
@@ -1620,6 +1774,8 @@ function updateHoldAction(w: WorldState, input: InputState, dt: number): void {
         w.openFacilityUid = null;
         sfx.pickup();
       }
+    } else if (done.kind === 'uncouple' && done.carIdx !== undefined) {
+      uncoupleFrom(w, done.carIdx);
     } else if (done.kind === 'rail' && done.targetUid) {
       const hz = w.trackHazards.find((h) => h.uid === done.targetUid && !h.repaired);
       if (hz && getItemCount(w, 'rails') > 0) {
@@ -1774,6 +1930,9 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   if (w.throttleOpen && Math.hypot(w.player.x - 136, w.player.y) > 90) {
     w.throttleOpen = false;
   }
+  if (w.tradeOpen && !w.props.some((pr) => pr.kind === 'npc_keeper' && Math.hypot(w.player.x - pr.x, w.player.y - pr.y) < 190)) {
+    w.tradeOpen = false; // walked (or drove) away from the trader
+  }
   if (w.openContainerUid) {
     const cp = getOpenContainerProp(w);
     if (!cp || Math.hypot(w.player.x - cp.x, w.player.y - cp.y) > 150) {
@@ -1811,24 +1970,15 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   }
 
   // 0. Day/Night & Regional Weather (H6)
-  const prevNight = isNight(w);
   w.dayTime += dt / DAY_LENGTH;
   if (w.dayTime >= 1) {
     w.dayTime -= 1;
     w.dayCount++;
   }
   const nowNight = isNight(w);
-  const hasLiveNests = w.props.some((pr) => pr.kind === 'monster_nest' && pr.hp > 0);
-  if (!prevNight && nowNight) {
-    // H3: Clearing all nests at a station prevents night raids!
-    if (w.mode !== 'station' || hasLiveNests) {
-      w.nightWavesLeft = 2;
-      w.nightWaveTimer = 24;
-      sfx.omenHowl();
-    }
-  } else if (prevNight && !nowNight) {
-    w.nightWavesLeft = 0;
-  }
+  // Design §5.3: day and night are atmosphere and body heat, not the station's main pressure —
+  // no more timed night raids; monsters come from nests (updateNests) until the nests are gone.
+  w.nightWavesLeft = 0;
 
   // Regional weather: only this region's own kind, and only now and then.
   w.weatherTimer -= dt;
@@ -1998,7 +2148,9 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   }
 
   if (w.mode === 'station' && w.gear > 0) {
-    if (!w.selectedRoute) {
+    if (w.monsters.some((m) => m.guard && m.hp > 0)) {
+      w.gear = 0;
+    } else if (!w.selectedRoute) {
       w.gear = 0;
       w.routeOpen = true;
     } else if (!isPointOnTrain(w, p.x, p.y, 18)) {
@@ -2094,7 +2246,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
     for (const wl of w.stationWalls) wl.x -= dx;
     for (const br of w.stationBarriers) br.x -= dx;
     for (const h of w.trackHazards) h.x -= dx;
-    for (const m of w.monsters) if (!m.onTrain) m.x -= dx;
+    for (const m of w.monsters) if (!m.onTrain && !m.board) m.x -= dx; // boarders move in the train's frame
     for (const pk of w.pickups) if (!pk.onTrain) pk.x -= dx;
     if (w.decoyPos) w.decoyPos.x -= dx;
     for (const er of w.nestEruptions) er.x -= dx;
@@ -2211,6 +2363,9 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         w.dangerSpawnedInWave = false;
         w.roadsideEventSpawned = 0;
         w.parallelTrainX = null;
+        w.pendingOmen = null;
+        w.stormEta = null;
+        w.roadEvents = planRoadEvents(w, route.distance, route.zone);
         w.wastelandStopTimer = 0;
         // H5: Frequent hazards ONLY in sinking_belt; rare loose rail elsewhere
         w.hazardSpawnTimer = route.zone === 'sinking_belt' ? 28 : 220;
@@ -2218,126 +2373,14 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
           w.weather = 'fog';
           w.weatherTimer = 180;
         }
-        saveWorld(w);
       }
     }
 
-    // Driving in Wasteland: Wave Pacing (C: calm -> omen -> danger -> calm) & World Roadside Events (H7)
+    // Driving in Wasteland: leg progress, station streaming (road events: roadEvents.ts)
     if (w.mode === 'wasteland') {
       w.legDistance += dm;
       w.wastelandStopTimer = 0;
-      const progress = Math.min(1, w.legDistance / Math.max(1, w.legTotal));
       const remPx = Math.max(0, (w.legTotal - w.legDistance) * 18);
-
-      // Trigger 3 structured waves along the 8-12 min leg: ~24%, ~54%, ~80%
-      const waveMarks = [0.24, 0.54, 0.8];
-      if (w.wavePhase === 'calm' && w.waveIndex < waveMarks.length && progress >= waveMarks[w.waveIndex]) {
-        w.wavePhase = 'omen';
-        w.omenTimer = 20;
-        w.dangerSpawnedInWave = false;
-        w.omenLabel =
-          w.zoneKind === 'sinking_belt'
-            ? '路基传来闷响，浓雾更深了'
-            : w.zoneKind === 'ivy_city'
-              ? '高架阴影里有东西在跟着列车'
-              : '远处荒原传来低沉的嚎叫';
-        sfx.omenHowl();
-      } else if (w.wavePhase === 'omen') {
-        w.omenTimer -= dt;
-        if (w.omenTimer <= 0) {
-          w.wavePhase = 'danger';
-          w.omenTimer = 32;
-          w.omenLabel = '';
-        }
-      } else if (w.wavePhase === 'danger') {
-        if (!w.dangerSpawnedInWave && !w.stationStreamed) {
-          w.dangerSpawnedInWave = true;
-          const count = w.zoneKind === 'monster_wastes' || w.zoneTier >= 3 ? 3 : 2;
-          const fromNorth = Math.random() < 0.5;
-          for (let i = 0; i < count; i++) {
-            const k = pickZoneEnemyKind(w.zoneKind, w.zoneTier, true);
-            w.monsters.push(createMonster(k, 420 + i * 65, fromNorth ? -340 : 340, false, w.zoneTier));
-          }
-          // Occasional crop pest on wave 2
-          if (w.waveIndex === 1) {
-            for (const car of trainDecks(w)) {
-              const pl = car.buildings.find((b) => b.type === 'planter' && b.planted && !b.pestInfested);
-              if (pl && Math.random() < 0.35) {
-                pl.pestInfested = true;
-                break;
-              }
-            }
-          }
-        }
-        w.omenTimer -= dt;
-        if (w.omenTimer <= 0 && w.monsters.filter((m) => !m.onTrain).length === 0) {
-          w.wavePhase = 'calm';
-          w.waveIndex++;
-        }
-      }
-
-      // World roadside events (H7, no popups! Appear directly beside tracks)
-      if (w.roadsideEventSpawned === 0 && progress >= 0.38 && !w.stationStreamed) {
-        w.roadsideEventSpawned = 1;
-        const roll = Math.random();
-        if (roll < 0.45) {
-          // Overturned roadside truck (container players can brake to loot!)
-          const inv = createInventory(6);
-          addToInventory(inv, 'scrap', 5);
-          addToInventory(inv, 'parts', 2);
-          addToInventory(inv, 'cookedFood', 1);
-          w.props.push({
-            uid: uid('ev'),
-            kind: 'roadside_wreck',
-            mat: 'metal',
-            x: 1180,
-            y: -175,
-            r: 30,
-            hp: 55,
-            maxHp: 55,
-            hitFlash: 0,
-            label: '路边翻倒的货车',
-            isContainer: true,
-            searched: false,
-            containerInv: inv,
-          });
-        } else if (roll < 0.78) {
-          w.props.push({
-            uid: uid('ev'),
-            kind: 'roadside_waver',
-            x: 1180,
-            y: 175,
-            r: 20,
-            hp: 999,
-            maxHp: 999,
-            hitFlash: 0,
-            label: '路边挥手的变异者',
-            interactOnly: true,
-          });
-        } else {
-          w.props.push({
-            uid: uid('ev'),
-            kind: 'nameless_graves',
-            x: 1180,
-            y: -185,
-            r: 32,
-            hp: 999,
-            maxHp: 999,
-            hitFlash: 0,
-            label: '无字墓群',
-            interactOnly: true,
-            loreId: `graves_${w.stationIdx}`,
-            loreTitle: '沿轨排列的无字墓碑',
-            loreText: '数十座低矮石碑顺着铁道排开。碑面干净得反常，连风化的刻痕都没有。',
-          });
-        }
-      } else if (w.roadsideEventSpawned === 1 && progress >= 0.68 && !w.stationStreamed) {
-        w.roadsideEventSpawned = 2;
-        if (w.stationIdx >= 1) {
-          // Uncanny parallel ghost train passes on the far northern horizon!
-          w.parallelTrainX = -1100;
-        }
-      }
 
       // Stream next station into view
       if (!w.stationStreamed && w.selectedRoute && remPx <= 2200) {
@@ -2373,20 +2416,27 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         sfx.questDone();
       }
     }
-  } else if (w.mode === 'wasteland') {
-    // Kept advantage: stopping in the wasteland draws siege pressure!
-    w.wastelandStopTimer += dt;
-    if (w.wastelandStopTimer > 5.0) {
-      w.wastelandSiegeCd -= dt;
-      if (w.wastelandSiegeCd <= 0 && w.monsters.length < 10) {
-        w.wastelandSiegeCd = 11.0;
-        const count = 2;
-        for (let i = 0; i < count; i++) {
-          const ang = (Math.PI * 2 * i) / count + Math.random() * 0.6;
-          w.monsters.push(createMonster(pickZoneEnemyKind(w.zoneKind, w.zoneTier), Math.cos(ang) * 520, Math.sin(ang) * 380, false, w.zoneTier));
-        }
-        sfx.omenHowl();
-      }
+  }
+
+  // Road events: warnings keep counting down even if you stop; new ones come as the miles pass.
+  // (Stopping out here no longer summons a siege — it only costs time and fuel.)
+  if (w.mode === 'wasteland') updateRoadEvents(w, dt, Math.min(1, w.legDistance / Math.max(1, w.legTotal)));
+  updateStranger(w, dt);
+
+  // 3b. Standing still costs too (design §7): the firebox keeps burning for warmth, cooking and light.
+  if (w.trainSpeed <= 1 && w.mode !== 'city_escape' && w.boilerFuel > 0) {
+    w.boilerFuel = Math.max(0, w.boilerFuel - getIdleFuelPerSec(w) * dt);
+  }
+  // Carriage upkeep, once per new day (also catches days skipped by sleeping).
+  if (w.lastUpkeepDay === undefined) w.lastUpkeepDay = w.dayCount;
+  while (w.lastUpkeepDay < w.dayCount) {
+    w.lastUpkeepDay++;
+    const { paid, unpaid } = payCarriageUpkeep(w);
+    if (unpaid > 0) {
+      addFloat(w, p.x, p.y - 34, `废料不足，${unpaid} 节车厢失修`, '#d96c5b', 2.4);
+      sfx.hitMetal();
+    } else if (paid > 0) {
+      addFloat(w, p.x, p.y - 34, `车厢维护 -${paid} 废料`, '#c9954d', 1.8);
     }
   }
 
@@ -2562,26 +2612,6 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
   autoEquipNewRangedWeapons(w);
   updateNestEruptions(w, dt);
 
-  // Night waves (only if wasteland OR station still has live monster nests, H3!)
-  if (nowNight && w.mode !== 'city_escape' && w.nightWavesLeft > 0) {
-    w.nightWaveTimer -= dt;
-    if (w.nightWaveTimer <= 0 && w.monsters.length < 7) {
-      w.nightWavesLeft--;
-      w.nightWaveTimer = 110;
-      if (w.mode !== 'station' || hasLiveNests) {
-        const count = 2;
-        const fromNorth = Math.random() < 0.5;
-        for (let i = 0; i < count; i++) {
-          const kind = i === 0 ? 'nightwalker' : pickZoneEnemyKind(w.zoneKind, w.zoneTier);
-          const offX = w.cameraX + (Math.random() < 0.5 ? -860 - i * 45 : 860 + i * 45);
-          const offY = fromNorth ? -560 : 560;
-          w.monsters.push(createMonster(kind, offX, offY, false, w.zoneTier));
-        }
-        sfx.omenHowl();
-      }
-    }
-  }
-
   // Night No-Lantern Darkness Threat (kept advantage!)
   const outsideInDarkNoLantern =
     nowNight && w.mode !== 'city_escape' && !isPointOnTrain(w, p.x, p.y, 18) && !playerHasActiveLantern(w);
@@ -2639,12 +2669,65 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
     if (w.decoyPos.ttl <= 0) w.decoyPos = null;
   }
 
+  // 6b. Boarders on (or chasing) the hull have their own AI (boarding.ts)
+  updateBoarders(w, dt);
+
   // 7. Differentiated Monster AI (H1/H2: windup, charger stun, burrower light fear, nightwalker light orbit, mutant_raider ranged!)
   for (const m of w.monsters) {
     if (m.hp <= 0) continue;
     m.hitFlash = Math.max(0, m.hitFlash - dt);
     m.attackCd = Math.max(0, m.attackCd - dt);
+    if (m.board) {
+      if (m.windupTimer > 0) m.windupTimer = Math.max(0, m.windupTimer - dt);
+      continue;
+    }
     if ((m.alertedByNoise ?? 0) > 0) m.alertedByNoise = Math.max(0, (m.alertedByNoise ?? 0) - dt);
+
+    // Exit-track guardian (design §5.3): asleep on the rails until you come close or hit it;
+    // if you hole up on the train it batters the train for a while, then goes home to heal a little.
+    if (m.guard) {
+      const g = m.guard;
+      const homeX = w.stationAnchorX + g.homeDX;
+      if (g.asleep) {
+        if (w.mode === 'station' && p.alive && Math.hypot(p.x - m.x, p.y - m.y) < GUARD_WAKE_RADIUS) {
+          wakeGuard(w, m);
+        } else {
+          m.vx = 0;
+          m.vy = 0;
+          m.windupTimer = 0;
+          continue;
+        }
+      }
+      if (!g.returning) {
+        const holedUp = isPointOnTrain(w, p.x, p.y, 6) || Math.hypot(p.x - homeX, p.y - g.homeY) > 900;
+        g.pressure = holedUp ? g.pressure + dt : Math.max(0, g.pressure - dt * 0.5);
+        if (g.pressure >= GUARD_SIEGE_SECONDS) {
+          g.returning = true;
+          m.windupTimer = 0;
+          m.aiState = 'wander';
+        }
+      }
+      if (g.returning) {
+        const hx = homeX - m.x;
+        const hy = g.homeY - m.y;
+        const hd = Math.hypot(hx, hy);
+        if (hd < 10) {
+          g.asleep = true;
+          g.returning = false;
+          g.pressure = 0;
+          m.x = homeX;
+          m.y = g.homeY;
+          m.hp = Math.min(m.maxHp, m.hp + m.maxHp * GUARD_REGEN_FRACTION);
+          m.onTrain = false;
+        } else {
+          const step = Math.min(hd, m.speed * 1.1 * dt);
+          m.x += (hx / hd) * step;
+          m.y += (hy / hd) * step;
+          if (m.onTrain && !isPointOnTrain(w, m.x, m.y, -4)) m.onTrain = false;
+        }
+        continue;
+      }
+    }
 
     // Bumper ram
     if (w.hasBumper && w.trainSpeed >= GEAR_SPEEDS[3] - 25 && Math.hypot(m.x - (LOCO_W + 18), m.y) < 42) {
@@ -2804,6 +2887,7 @@ export function stepWorld(w: WorldState, input: InputState, rawDt: number): void
         sfx.shotgun();
       }
     } else if (
+      !m.guard &&
       (w.stationStreamed || (!nowNight && w.mode === 'station')) &&
       !isPointOnTrain(w, m.x, m.y) &&
       (m.alertedByNoise ?? 0) <= 0 &&

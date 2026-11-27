@@ -95,7 +95,7 @@ export const WorldOverlay: React.FC<WorldOverlayProps> = ({ world, onDismissCard
 
       {/* Wave omen — a whisper, not a notification */}
       {world.wavePhase === 'omen' && world.omenLabel && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 px-10 py-2 bg-[radial-gradient(ellipse_at_center,rgb(40_8_6/0.55),transparent_72%)]">
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 px-10 py-2 bg-[radial-gradient(ellipse_at_center,rgb(40_8_6/0.55),transparent_72%)]">
           <span className="anim-whisper block text-[12px] text-[#e8b3a6] text-engraved whitespace-nowrap">
             {world.omenLabel}
           </span>

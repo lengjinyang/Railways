@@ -385,6 +385,30 @@ export class Renderer2D {
       drawMonsterArt(ctx, w, m);
       ctx.globalAlpha = 1;
     }
+    // "Someone extra on the train": a still, frost-edged figure that's gone when you come close
+    if (w.stranger) {
+      const s = w.stranger;
+      const vis = this.visibilityAt(w, vision, s.x, s.y, 12);
+      if (vis > 0.01) {
+        const fade = Math.min(1, s.timer / 3);
+        ctx.save();
+        ctx.globalAlpha = vis * 0.78 * fade;
+        ctx.translate(s.x, s.y);
+        ctx.fillStyle = 'rgba(8, 10, 14, 0.9)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 11, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(0, -2, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(200, 224, 240, 0.45)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 11, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     drawPlayerArt(ctx, w);
 
     // 11. Projectiles

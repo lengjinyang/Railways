@@ -17,11 +17,18 @@ import {
   type ResourceKey,
   type SlotInventory,
 } from '../inventory';
-import { BUILDINGS, CRAFT_RECIPES, type BuildingType } from '../recipes_v2';
+import { BUILDINGS, CRAFT_RECIPES, DEMO_DISABLED_BUILDINGS, type BuildingType } from '../recipes_v2';
 import { sfx } from '../sfx';
 import {
   BED_REST_HOURS,
   BODY_ARMOR_META,
+  CAR_UPKEEP_SCRAP,
+  CAR_UPKEEP_WEAR,
+  DAY_LENGTH,
+  HUNGER_DRAIN_PER_SEC,
+  IDLE_FUEL_PER_CAR_PER_SEC,
+  IDLE_FUEL_PER_SEC,
+  THIRST_DRAIN_PER_SEC,
   CAR_COLS,
   CAR_ROWS,
   CAR_W,
@@ -775,6 +782,93 @@ export function estimateRouteFuel(w: WorldState, distanceMeters: number, gear: 1
   return +((distanceMeters / 460) * weightFactor * overloadMult * speedMult * pylonMult).toFixed(1);
 }
 
+/** Crystal per second the firebox burns while the train stands still (warmth, cooking, light). */
+export function getIdleFuelPerSec(w: WorldState): number {
+  return (IDLE_FUEL_PER_SEC + IDLE_FUEL_PER_CAR_PER_SEC * w.flatbeds.length) * getCrystalPylonBonus(w).fuelMult;
+}
+
+export function getDailyUpkeepScrap(w: WorldState): number {
+  return CAR_UPKEEP_SCRAP * w.flatbeds.length;
+}
+
+export type SupplyKind = '燃料' | '食物' | '净水' | '废料';
+
+export interface SupplyForecast {
+  /** In-game days the current stock lasts standing still, whichever supply runs out first. */
+  days: number;
+  limiting: SupplyKind;
+  /** Crystal held back for the next leg (selected route, else the cheapest one on offer). */
+  fuelReserve: number;
+}
+
+/**
+ * "At this rate, how long can I stay?" (design §7.5). Fuel counts only what is left after
+ * setting aside enough for the next leg, so 0 days on fuel means: leave now or you won't make it.
+ */
+export function getSupplyForecast(w: WorldState): SupplyForecast {
+  const p = w.player;
+  const routes = w.selectedRoute ? [w.selectedRoute] : w.availableRoutes;
+  const fuelReserve = routes.length > 0 ? Math.min(...routes.map((r) => estimateRouteFuel(w, r.distance, 2))) : 0;
+
+  const perDay: Record<SupplyKind, number> = {
+    燃料: getIdleFuelPerSec(w) * DAY_LENGTH,
+    食物: HUNGER_DRAIN_PER_SEC * DAY_LENGTH,
+    净水: THIRST_DRAIN_PER_SEC * DAY_LENGTH,
+    废料: getDailyUpkeepScrap(w),
+  };
+  const stock: Record<SupplyKind, number> = {
+    燃料: w.boilerFuel + getItemCount(w, 'magicShard') - fuelReserve,
+    食物: getItemCount(w, 'cookedFood') * 46 + getItemCount(w, 'rawFood') * 20 + p.hunger,
+    净水: getItemCount(w, 'water') * 40 + p.thirst,
+    废料: getItemCount(w, 'scrap'),
+  };
+
+  let limiting: SupplyKind = '燃料';
+  let days = Infinity;
+  for (const k of Object.keys(perDay) as SupplyKind[]) {
+    if (perDay[k] <= 0) continue;
+    const d = Math.max(0, stock[k]) / perDay[k];
+    if (d < days) {
+      days = d;
+      limiting = k;
+    }
+  }
+  return { days: Number.isFinite(days) ? days : 99, limiting, fuelReserve };
+}
+
+/** One line for the route map / throttle: how long the stock lasts standing here, and what runs out first. */
+export function describeSupplyForecast(w: WorldState): string {
+  const f = getSupplyForecast(w);
+  if (f.limiting === '燃料' && w.boilerFuel + getItemCount(w, 'magicShard') < f.fuelReserve) {
+    return `晶石已不够下一段路（约需 ${f.fuelReserve}）`;
+  }
+  const span = f.days >= 99 ? '很久' : f.days < 1 ? '不到 1 天' : `约 ${f.days < 10 ? f.days.toFixed(1) : Math.round(f.days)} 天`;
+  const note = f.limiting === '燃料' ? '（已留出下一段路的晶石）' : '';
+  return `照现在的开销，补给还能撑${span}，先耗尽的是${f.limiting}${note}`;
+}
+
+/**
+ * Dawn upkeep: each carriage, front to back, takes its scrap. A carriage the stock can't cover
+ * wears every hull plate (down to 1 hp, never a breach on its own). Returns how many went unpaid.
+ */
+export function payCarriageUpkeep(w: WorldState): { paid: number; unpaid: number } {
+  let paid = 0;
+  let unpaid = 0;
+  for (const car of w.flatbeds) {
+    if (getItemCount(w, 'scrap') >= CAR_UPKEEP_SCRAP) {
+      spendCost(w, { scrap: CAR_UPKEEP_SCRAP });
+      paid += CAR_UPKEEP_SCRAP;
+    } else {
+      unpaid++;
+      for (const panel of car.hull) {
+        panel.hp = Math.max(Math.min(panel.hp, 1), panel.hp - CAR_UPKEEP_WEAR);
+        panel.hitFlash = 0.4;
+      }
+    }
+  }
+  return { paid, unpaid };
+}
+
 export function enterZone(w: WorldState, kind: ZoneKind, tier: ZoneTier): void {
   w.zoneKind = kind;
   w.zoneTier = tier;
@@ -801,6 +895,10 @@ export function restInBed(w: WorldState, bedTier: 1 | 2, cx = w.player.x, cy = w
     return '今日已休息过';
   }
   w.dayTime += BED_REST_HOURS / 24;
+  // The firebox keeps burning through the night if the train is standing still.
+  if (w.trainSpeed <= 1 && w.mode !== 'city_escape') {
+    w.boilerFuel = Math.max(0, w.boilerFuel - getIdleFuelPerSec(w) * (BED_REST_HOURS / 24) * DAY_LENGTH);
+  }
   if (w.dayTime >= 1) {
     w.dayTime -= 1;
     w.dayCount++;
@@ -930,9 +1028,83 @@ export function createFlatbed(id: number, couplerKind: CouplerKind, baseWeight =
   };
 }
 
+/**
+ * Take one carriage out of the train, with everything on it. Carriages behind it close up the gap:
+ * their index, buildings and anything riding on them shift one slot forward.
+ * Used by death losses and by uncoupling (which drops a carriage and all behind it).
+ */
+export function removeCarriageAt(w: WorldState, idx: number): FlatbedCar | null {
+  if (idx < 0 || idx >= w.flatbeds.length) return null;
+  const b = getCarBounds(idx);
+  const shift = CAR_W + COUPLER_GAP;
+  const slotLeft = b.left - COUPLER_GAP / 2;
+  const slotRight = b.right + COUPLER_GAP / 2;
+  const inSlot = (x: number, y: number) => x >= slotLeft && x <= slotRight && Math.abs(y) <= HALF_H + 12;
+  const behind = (x: number) => x < slotLeft;
+
+  w.monsters = w.monsters.filter((m) => !(m.onTrain && inSlot(m.x, m.y)));
+  for (const m of w.monsters) if (m.onTrain && behind(m.x)) m.x += shift;
+  w.pickups = w.pickups.filter((pk) => !(pk.onTrain && inSlot(pk.x, pk.y)));
+  for (const pk of w.pickups) if (pk.onTrain && behind(pk.x)) pk.x += shift;
+  if (w.lanternPos?.onTrain) {
+    if (inSlot(w.lanternPos.x, w.lanternPos.y)) pickUpLantern(w, true);
+    else if (behind(w.lanternPos.x)) w.lanternPos.x += shift;
+  }
+  const p = w.player;
+  if (inSlot(p.x, p.y)) {
+    p.x = b.right + COUPLER_GAP + 26; // step forward onto the carriage (or cab) in front
+    p.y = 0;
+  } else if (behind(p.x) && Math.abs(p.y) <= HALF_H + 12) {
+    p.x += shift;
+  }
+
+  const [removed] = w.flatbeds.splice(idx, 1);
+  for (let i = idx; i < w.flatbeds.length; i++) {
+    w.flatbeds[i].id = i;
+    for (const bd of w.flatbeds[i].buildings) bd.carIdx = i;
+  }
+  const gone = new Set(removed.buildings.map((bd) => bd.uid));
+  if (w.openChestUid && gone.has(w.openChestUid)) w.openChestUid = null;
+  if (w.openFacilityUid && gone.has(w.openFacilityUid)) w.openFacilityUid = null;
+  w.boilerMax = getCoreMaxCapacity(w);
+  w.boilerFuel = Math.min(w.boilerFuel, w.boilerMax);
+  return removed;
+}
+
+/**
+ * Uncouple (design §2.5): cut loose the carriage at `idx` and everything behind it — with all that's on board.
+ * The first carriage is the core and stays. Returns how many carriages went.
+ */
+export function uncoupleFrom(w: WorldState, idx: number): number {
+  if (idx < 1 || idx >= w.flatbeds.length) return 0;
+  let n = 0;
+  for (let i = w.flatbeds.length - 1; i >= idx; i--) {
+    removeCarriageAt(w, i);
+    n++;
+  }
+  sfx.crash();
+  w.shake = Math.max(w.shake, 10);
+  return n;
+}
+
+/** Hull integrity (0..1) of one carriage, ignoring the open passages between cars. */
+export function getCarriageIntegrity(w: WorldState, carIdx: number): number {
+  const car = w.flatbeds[carIdx];
+  if (!car) return 1;
+  let hp = 0;
+  let max = 0;
+  for (const panel of car.hull) {
+    if (isHullPassage(w, carIdx, panel)) continue;
+    hp += Math.max(0, panel.hp);
+    max += panel.maxHp;
+  }
+  return max > 0 ? hp / max : 1;
+}
+
 // --- Building, In-Place Upgrade (G3) & Facility-Scoped Crafting (D) ---
 export function tryPlaceBuilding(w: WorldState, wx: number, wy: number): string | null {
   const def = BUILDINGS[w.selectedBuild];
+  if (DEMO_DISABLED_BUILDINGS.has(w.selectedBuild)) return '列车不配备防御设施';
   if (def.requiresWorkbench && !hasWorkbench(w)) return '需先建造工作台';
   if (!canAffordCost(w, def.cost)) return '材料不足';
 
@@ -1168,6 +1340,10 @@ export function setThrottleGear(w: WorldState, target: GearLevel): string | null
     w.routeOpen = true;
     sfx.lever();
     return '请先在航线图选定下一站';
+  }
+  if (w.mode === 'station' && target > 0 && w.monsters.some((m) => m.guard && m.hp > 0)) {
+    sfx.gridDeny();
+    return '出站的铁轨上还盘踞着守关者';
   }
   if (w.mode === 'station' && target > 0 && w.vineSnare > 20) {
     sfx.gridDeny();

@@ -171,9 +171,10 @@ export const TitlePrologue: React.FC<TitlePrologueProps> = ({ step, saveSummary,
               >
                 <Play className="w-3.5 h-3.5 text-brass-hi" />
                 <span className="flex flex-col leading-tight">
-                  <span className="text-[12.5px] text-parchment font-semibold">继续旅程 · {saveSummary.stationName}</span>
+                  <span className="text-[12.5px] text-parchment font-semibold">继续旅程 · {saveSummary.suspended && saveSummary.onRoad ? `${saveSummary.stationName}之后的路上` : saveSummary.stationName}</span>
                   <span className="text-[10.5px] text-ash font-mono">
                     第 {saveSummary.dayCount} 天 · {saveSummary.totalDistance}m · {saveSummary.flatbedCount} 节车厢 · {formatSavedAgo(saveSummary.savedAt)}
+                    {saveSummary.suspended && ' · 暂离存档，读取后即删除'}
                   </span>
                 </span>
               </button>

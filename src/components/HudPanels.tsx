@@ -12,7 +12,6 @@ import {
   Lamp,
   Package,
   BrickWall,
-  Shield,
   Lock,
   TrainFront,
 } from 'lucide-react';
@@ -25,7 +24,9 @@ import {
   MELEE_META,
   RANGED_META,
   TOOL_META,
+  ZONE_META,
   canAffordCost,
+  describeSupplyForecast,
   getCarBounds,
   getClockLabel,
   getHotbarBindings,
@@ -67,8 +68,7 @@ const clampPct = (n: number) => Math.max(0, Math.min(100, n));
 const BUILD_CATEGORIES: Array<{ id: string; label: string; icon: React.ReactNode; items: BuildingType[] }> = [
   { id: 'craft', label: '工坊', icon: <Hammer className="w-4 h-4" />, items: ['workbench', 'campfire', 'rain_collector', 'planter'] },
   { id: 'living', label: '起居', icon: <Package className="w-4 h-4" />, items: ['chest', 'bed', 'lantern'] },
-  { id: 'structure', label: '构造', icon: <BrickWall className="w-4 h-4" />, items: ['wood_wall', 'door'] },
-  { id: 'defense', label: '防御', icon: <Shield className="w-4 h-4" />, items: ['turret', 'bumper', 'crystal_pylon'] },
+  { id: 'structure', label: '构造', icon: <BrickWall className="w-4 h-4" />, items: ['wood_wall', 'door', 'crystal_pylon'] },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -155,7 +155,6 @@ function describeBinding(w: WorldState, b: HotbarBinding): SlotView {
 }
 
 /** Wave marks along a wasteland leg (must match the simulation's wave pacing). */
-const LEG_WAVE_MARKS = [0.24, 0.54, 0.8];
 
 function formatEta(sec: number): string {
   if (!isFinite(sec) || sec <= 0) return '';
@@ -164,16 +163,15 @@ function formatEta(sec: number): string {
   return m > 0 ? `约 ${m}:${String(s).padStart(2, '0')}` : `约 ${s}s`;
 }
 
-/** Top-centre journey strip while driving: where you're headed, how far, how long, where the danger sits. */
+/** Top-centre journey strip while driving: where you're headed, how far, how long. (No danger markers — design §12.1.) */
 const LegProgress: React.FC<{ world: WorldState }> = ({ world }) => {
   const total = Math.max(1, world.legTotal);
   const done = Math.min(total, Math.max(0, world.legDistance));
   const pct = (done / total) * 100;
   const left = Math.max(0, Math.round(total - done));
-  const dest = world.mode === 'city_escape' ? '锈原 · 废弃小站' : world.selectedRoute?.stationName ?? '下一站';
+  const dest = world.mode === 'city_escape' ? '锈原 · 废弃小站' : world.selectedRoute ? (world.selectedRoute.boss ? world.selectedRoute.stationName : `${ZONE_META[world.selectedRoute.zone].name}的某座站`) : '下一站';
   const mps = world.trainSpeed / 18;
   const eta = mps > 0.5 ? formatEta((total - done) / mps) : '';
-  const showWaves = world.mode === 'wasteland';
   return (
     <div className="fixed top-3.5 left-1/2 -translate-x-1/2 w-[min(440px,46vw)] text-engraved anim-fade-in">
       <div className="flex items-baseline justify-between gap-3 mb-1.5 px-0.5">
@@ -191,20 +189,6 @@ const LegProgress: React.FC<{ world: WorldState }> = ({ world }) => {
           className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brass/70 to-brass-hi"
           style={{ width: `${pct}%`, transition: 'width 300ms linear' }}
         />
-        {showWaves &&
-          LEG_WAVE_MARKS.map((mk, i) => {
-            const passed = i < world.waveIndex;
-            return (
-              <span
-                key={mk}
-                title="兽群可能出现的路段"
-                className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[7px] h-[7px] rotate-45 ring-1 ${
-                  passed ? 'bg-ash-dim/60 ring-black/40' : 'bg-rust ring-black/60'
-                }`}
-                style={{ left: `${mk * 100}%` }}
-              />
-            );
-          })}
         {/* the train */}
         <span
           className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[11px] h-[11px] rounded-full bg-parchment ring-2 ring-brass shadow-[0_0_8px_rgb(237_196_124/0.6)]"
@@ -385,9 +369,9 @@ export const HudPanels: React.FC<HudProps> = ({ world, actions }) => {
             <Readout label="距下站" tone="text-brass-hi" value={`${Math.max(0, Math.round(world.legTotal - world.legDistance))}m`} />
           )}
           {world.mode === 'station' && (
-            <button onClick={actions.onToggleRoute} className="btn-primary px-3 py-1.5 text-[11.5px]">
+            <button onClick={actions.onToggleRoute} title={describeSupplyForecast(world)} className="btn-primary px-3 py-1.5 text-[11.5px]">
               <MapIcon className="w-3.5 h-3.5" />
-              {world.selectedRoute ? world.selectedRoute.stationName : '选定下一站'}
+              {world.selectedRoute ? `驶往${ZONE_META[world.selectedRoute.zone].name}` : '选定下一站'}
             </button>
           )}
         </div>

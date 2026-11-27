@@ -23,9 +23,8 @@ import {
   loadWorld,
   quickStackToChests,
   rollbackToStationSave,
-  saveWorld,
-  autosaveWorld,
-  AUTOSAVE_INTERVAL,
+  saveSuspend,
+  clearSuspend,
   selectRoute,
   setThrottleGear,
   sortInventoryGrid,
@@ -189,7 +188,6 @@ export const App: React.FC = () => {
     let lastT = performance.now();
     let hudAccum = 0;
     let lastSig = '';
-    let autosaveAccum = 0;
     let seenSavedAt = worldRef.current.lastSavedAt;
     let seenWorld = worldRef.current;
 
@@ -204,20 +202,13 @@ export const App: React.FC = () => {
 
       if (startedRef.current && !isWorldPaused()) {
         stepWorld(w, inputRef.current, dt);
-        // Timed autosave: every minute of play, waiting for a calm moment (retry every 5 s).
-        autosaveAccum += dt;
-        if (autosaveAccum >= AUTOSAVE_INTERVAL) {
-          autosaveAccum = autosaveWorld(w) ? 0 : AUTOSAVE_INTERVAL - 5;
-        }
         if (w !== seenWorld) {
           // Loaded / restarted / rolled back: not a new save, just a new world to watch
           seenWorld = w;
           seenSavedAt = w.lastSavedAt;
-          autosaveAccum = 0;
         } else if (w.lastSavedAt !== seenSavedAt) {
-          // Any save (timed, station checkpoint, departure, manual) refreshes the title card + badge
+          // A station checkpoint refreshes the title card + badge
           seenSavedAt = w.lastSavedAt;
-          autosaveAccum = 0;
           setSaveSummary(getSaveSummary());
           setSavedFlashAt(performance.now());
         }
@@ -439,14 +430,17 @@ export const App: React.FC = () => {
     };
   }, [closeAllSidebars, forceHudSync, hasOpenSidebar, isWorldPaused]);
 
-  // Leaving the page (tab switch, minimise, close, reload) always saves the run as it is.
+  // Design §6: only station arrivals save. Leaving the page (tab switch, minimise, close, reload)
+  // writes a one-shot suspend save; coming back to the page drops it again, so it can't be used
+  // to undo a death later on.
   useEffect(() => {
     const saveOnLeave = () => {
       if (!startedRef.current) return;
-      if (autosaveWorld(worldRef.current, true)) setSaveSummary(getSaveSummary());
+      saveSuspend(worldRef.current);
     };
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') saveOnLeave();
+      else if (startedRef.current) clearSuspend();
     };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pagehide', saveOnLeave);
@@ -467,16 +461,10 @@ export const App: React.FC = () => {
     forceHudSync();
   }, [forceHudSync]);
 
+  /** "Take a break": suspend the run as it is and go back to the title. Continue resumes it once. */
   const handleManualSave = useCallback(() => {
-    const w = worldRef.current;
-    if (saveWorld(w)) {
-      setSaveSummary(getSaveSummary());
-      sfx.questDone();
-      addFloat(w, w.player.x, w.player.y - 28, '已存档', '#7bc985');
-      setMenuOpen(false);
-      forceHudSync();
-    }
-  }, [forceHudSync]);
+    if (saveSuspend(worldRef.current)) window.location.reload();
+  }, []);
 
   /** Begin the fresh run that's already waiting in worldRef (title screen). */
   const beginFreshRun = useCallback(() => {

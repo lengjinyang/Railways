@@ -873,18 +873,28 @@ export function drawMonsterArt(ctx: CanvasRenderingContext2D, w: WorldState, m: 
   }
 
   if (m.elite) {
+    const barW = m.boss ? Math.max(70, r * 2.6) : 44;
     ctx.fillStyle = 'rgba(0,0,0,0.82)';
-    rrect(ctx, -22, -r - 12, 44, 5, 2);
+    rrect(ctx, -barW / 2, -r - 12, barW, 5, 2);
     ctx.fill();
-    ctx.fillStyle = '#e2a24f';
-    rrect(ctx, -21, -r - 11, 42 * Math.max(0, m.hp / m.maxHp), 3, 1.5);
+    ctx.fillStyle = m.boss ? '#d9634a' : '#e2a24f';
+    rrect(ctx, -barW / 2 + 1, -r - 11, (barW - 2) * Math.max(0, m.hp / m.maxHp), 3, 1.5);
     ctx.fill();
-    ctx.font = uiFont(9.5, 700);
+    const label = m.guard?.asleep ? `${m.title ?? '巢穴守卫'} · 沉睡` : m.title ?? '巢穴守卫';
+    ctx.font = uiFont(m.boss ? 11 : 9.5, 700);
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(10,8,6,0.75)';
-    ctx.fillText('巢穴守卫', 0.8, -r - 16.2);
-    ctx.fillStyle = '#f3d58f';
-    ctx.fillText('巢穴守卫', 0, -r - 17);
+    ctx.fillText(label, 0.8, -r - 16.2);
+    ctx.fillStyle = m.guard?.asleep ? '#b9ad94' : '#f3d58f';
+    ctx.fillText(label, 0, -r - 17);
+    if (m.guard?.asleep) {
+      // slow breathing "z" drifting up — reads as asleep without a popup
+      const z = (t * 0.6 + m.x * 0.001) % 1;
+      ctx.globalAlpha = 0.7 * (1 - z);
+      ctx.font = uiFont(10 + z * 4, 700);
+      ctx.fillText('z', r * 0.6 + z * 8, -r - 24 - z * 16);
+      ctx.globalAlpha = 1;
+    }
     ctx.textAlign = 'left';
   } else if (m.hp < m.maxHp) {
     ctx.fillStyle = 'rgba(0,0,0,0.8)';

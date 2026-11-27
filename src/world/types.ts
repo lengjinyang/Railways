@@ -56,6 +56,31 @@ export const HUNGER_DRAIN_PER_SEC = 0.13; // ~12.8 min full drain (1.5-2 meals p
 export const THIRST_DRAIN_PER_SEC = 0.15; // ~11.1 min full drain (2-3 waters per 8-12 min leg)
 export const PLANTER_GROWTH_WATERED = 100 / 330; // ~5.5 min to mature when watered
 export const PLANTER_SEED_RETURN_CHANCE = 0.6; // 60% chance to retain seed on harvest
+/**
+ * Standing still costs too (design §7): the firebox keeps burning for warmth, cooking and light
+ * whenever the train is stopped — about 0.12 crystal/min for the locomotive plus 0.03/min per carriage,
+ * so a 10-minute station stop with two carriages burns ~1.8 of a 20-crystal boiler.
+ */
+export const IDLE_FUEL_PER_SEC = 0.002;
+export const IDLE_FUEL_PER_CAR_PER_SEC = 0.0005;
+/** Every carriage takes this much scrap in upkeep at each dawn; unpaid carriages wear their hull. */
+export const CAR_UPKEEP_SCRAP = 2;
+/** Hull wear on each plate of a carriage whose upkeep went unpaid (never below 1 hp — worn, not breached). */
+export const CAR_UPKEEP_WEAR = 20;
+/**
+ * Death (design §6): back to the last station, minus a not-quite-random loss.
+ * The carriage at risk is lost with this chance (the locomotive and the first carriage never are);
+ * each backpack stack is lost with the backpack chance, each chest stack with the (lower) chest chance.
+ */
+export const DEATH_CAR_LOSS_CHANCE = 0.5;
+export const DEATH_BACKPACK_STACK_LOSS = 0.35;
+export const DEATH_CHEST_STACK_LOSS = 0.1;
+/** Exit-track guardian: wakes when you come this close (px), gives up on the train after this long, heals this share. */
+export const GUARD_WAKE_RADIUS = 210;
+export const GUARD_SIEGE_SECONDS = 20;
+export const GUARD_REGEN_FRACTION = 0.15;
+/** Hold E this long at a coupler to cut the carriages behind it loose. */
+export const UNCOUPLE_HOLD_DURATION = 1.6;
 export const TURRET_RANGE = 260; // Reduced from 420 to 260 (pending_fixes #4)
 export const OUTER_MAX_RING = 2; // Finite outer exploration capped at ring 2 (#3)
 export const RAIL_LAY_DURATION = 2.0;
@@ -220,6 +245,8 @@ export interface RouteOption {
   distance: number; // meters (cruise ~7.22 m/s => 3500m ≈ 8.1 min)
   desc: string;
   warningTag?: string;
+  /** Act-end BOSS station: every route of the act converges here, and it's known in advance (design §5.2). */
+  boss?: boolean;
 }
 
 export interface StationRoom {
@@ -405,7 +432,9 @@ export interface LootFeedEntry {
 }
 
 export interface HoldActionState {
-  kind: 'loot' | 'rail' | 'quickstack' | 'eat' | 'upgrade' | 'vine';
+  kind: 'loot' | 'rail' | 'quickstack' | 'eat' | 'upgrade' | 'vine' | 'uncouple';
+  /** For 'uncouple': first carriage index to drop (it and everything behind it go). */
+  carIdx?: number;
   targetUid?: string;
   /** For 'eat': the exact consumable bound to the active hotbar slot. */
   itemKey?: ResourceKey;
@@ -454,6 +483,62 @@ export interface MonsterEntity {
   chargeDirX?: number;
   chargeDirY?: number;
   alertedByNoise?: number;
+  /**
+   * Exit-track guardian (design §5.3): sleeps on the rails ahead of the train, the train can't leave
+   * while it lives. Scavenging noise doesn't wake it; coming close or hitting it does. If you hole up
+   * on the train it batters the train for a while, then goes back to its rails and heals a little.
+   * `homeDX` is its rest spot relative to the station anchor (stations scroll in while approaching).
+   */
+  guard?: { homeDX: number; homeY: number; asleep: boolean; pressure: number; returning: boolean };
+  /** Act-end boss: `phase` 0 → 1 at 2/3 hp, → 2 at 1/3 hp; each phase calls in a pack and enrages. */
+  boss?: { phase: number };
+  /** Name drawn over an elite (defaults to the nest guardian's). */
+  title?: string;
+  /** Rides the outside of the hull (design §4.3): chase → crouch → leap → latched. See boarding.ts. */
+  board?: BoardState;
+}
+
+/** 撕壳者 tears the plate it holds; 攀附者 crawls to a facility and wrecks it; 钻入者 slips in through an open door or a hole. */
+export type BoarderRole = 'ripper' | 'creeper' | 'borer';
+
+export interface BoardState {
+  role: BoarderRole;
+  phase: 'chase' | 'crouch' | 'leap' | 'latched';
+  /** Phase / action timer (s). */
+  timer: number;
+  side: 'top' | 'bottom';
+  /** Hull plate it's going for, or holding on to. */
+  panelUid: string;
+  fromX: number;
+  fromY: number;
+  /** Crawling along the outside towards this x, if any. */
+  crawlToX: number | null;
+  /** Creeper: the facility it's after. */
+  targetUid: string | null;
+  /** Borer: seconds spent finding no way in (it lets go eventually). */
+  idle: number;
+}
+
+/** Things that happen on the road (design §4.2) — in the world, no popups, each one a choice. */
+export type RoadEventKind =
+  | 'boarders'
+  | 'wreck'
+  | 'merchant'
+  | 'waver'
+  | 'waver_return'
+  | 'storm'
+  | 'boiler'
+  | 'pests'
+  | 'coupler'
+  | 'ghost_train'
+  | 'graves'
+  | 'stranger';
+
+export interface RoadEventSlot {
+  /** Leg progress (0..1) at which it happens. */
+  at: number;
+  kind: RoadEventKind;
+  fired: boolean;
 }
 
 export interface NestEruption {
@@ -538,6 +623,8 @@ export interface DeathReport {
   deathNum: number;
   rollbackStationName: string;
   cause: string;
+  /** Carriage at risk on rollback: the one you fell in, else the most battered one (never the first). */
+  lossCarIdx: number | null;
 }
 
 export interface WorldState {
@@ -596,6 +683,18 @@ export interface WorldState {
 
   // Daily Bed Rest Limit & Diegetic Audio Timers
   lastSleepDay: number;
+  /** This leg's road events, in order (design §4.2). Missing on older saves. */
+  roadEvents?: RoadEventSlot[];
+  /** Run-wide event memory: one-off events seen, chain flags. */
+  eventFlags?: Record<string, boolean>;
+  /** A warned-about event on its way (storm on the horizon, claws on the hull). */
+  pendingOmen?: { kind: RoadEventKind; timer: number } | null;
+  /** Seconds until a storm seen on the horizon breaks (its own clock, so a raid can still come first). */
+  stormEta?: number | null;
+  /** "Someone extra on the train": a silent figure on a carriage, gone when you come close. */
+  stranger?: { x: number; y: number; timer: number } | null;
+  /** Last day whose carriage upkeep has been paid (missing on older saves → set on first tick). */
+  lastUpkeepDay: number;
   stomachGrowlCd: number;
   heartbeatCd: number;
   lastVitalChangeAt: number; // For HUD auto-fade when vitals are stable
@@ -722,6 +821,7 @@ export interface WorldState {
     monstersKilled: number;
     nestsCleared: number;
     elitesKilled?: number;
+    bossesKilled?: number;
     propsHarvested: number;
     buildingsPlaced: number;
     railsLaid: number;

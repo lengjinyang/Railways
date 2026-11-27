@@ -1,4 +1,34 @@
+import { addToInventory, type ResourceKey } from '../inventory';
+import { BUILDINGS, DEMO_DISABLED_BUILDINGS } from '../recipes_v2';
+import { syncFortressHullBonus } from './train';
 import { SAVE_VERSION, bumpUidSeq, type WorldState } from './types';
+
+/**
+ * Older saves may carry turrets or a ram from before the train stopped fighting (Q12).
+ * Take them down and hand their base materials back so nothing the player paid for is lost.
+ */
+function stripDisabledDefenses(w: WorldState): void {
+  const refund = (type: keyof typeof BUILDINGS) => {
+    for (const [k, v] of Object.entries(BUILDINGS[type].cost)) {
+      if ((v ?? 0) > 0) addToInventory(w.backpack, k as ResourceKey, v!);
+    }
+  };
+  for (const car of [...w.flatbeds, w.locoDeck]) {
+    const before = car.buildings.length;
+    car.buildings = car.buildings.filter((b) => {
+      if (!DEMO_DISABLED_BUILDINGS.has(b.type)) return true;
+      refund(b.type);
+      return false;
+    });
+    if (car.buildings.length !== before && car.id >= 0) syncFortressHullBonus(car);
+  }
+  if (w.hasBumper) {
+    refund('bumper');
+    w.hasBumper = false;
+    w.bumperTier = 1;
+  }
+  if (DEMO_DISABLED_BUILDINGS.has(w.selectedBuild)) w.selectedBuild = 'workbench';
+}
 
 export const SAVE_STORAGE_KEY = 'railways_save_v3';
 export const SAVE_STATION_KEY = 'railways_station_save_v3';
@@ -11,6 +41,10 @@ export interface SaveSummary {
   totalDistance: number;
   flatbedCount: number;
   coreCharge: number;
+  /** Saved by leaving the page mid-run (read once), rather than on arriving at a station. */
+  suspended: boolean;
+  /** Left mid-leg (between stations) rather than while parked at one. */
+  onRoad: boolean;
 }
 
 interface SerializedPayload {
@@ -99,6 +133,7 @@ export function deserializeWorld(raw: string): WorldState | null {
     if (!restored.locoDeck) {
       restored.locoDeck = { id: -1, baseWeight: 0, couplerKind: 'standard', couplerHp: 100, couplerWarnCd: 0, hull: [], buildings: [] };
     }
+    stripDisabledDefenses(restored);
 
     let maxNum = 1000;
     const scanUid = (id?: string) => {
@@ -128,9 +163,12 @@ export function deserializeWorld(raw: string): WorldState | null {
 // In-memory station snapshot fallback (also enables deterministic rollback in headless Node verify!)
 let memoryStationSnapshot: string | null = null;
 
-export function saveWorld(w: WorldState, key = SAVE_STORAGE_KEY): boolean {
-  const raw = serializeWorld(w);
-  w.lastSavedAt = Date.now();
+/**
+ * Saves follow design §6: the real save is the station checkpoint written on arrival.
+ * Leaving the page mid-run writes a one-shot *suspend* save (SAVE_STORAGE_KEY) that "continue"
+ * reads once and then deletes, so quitting is never a way to dodge a death.
+ */
+function writeKey(key: string, raw: string): boolean {
   const storage = getStorage();
   if (!storage) return true;
   try {
@@ -141,51 +179,61 @@ export function saveWorld(w: WorldState, key = SAVE_STORAGE_KEY): boolean {
   }
 }
 
-/** Save a station arrival checkpoint (used on death rollback instead of random carriage loss). */
+function removeKey(key: string): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+/** One-shot suspend save for leaving the page mid-run. A dead run is never suspended. */
+export function saveSuspend(w: WorldState): boolean {
+  if (!w.player.alive || w.deathReport || w.gameOver || w.victory) return false;
+  return writeKey(SAVE_STORAGE_KEY, serializeWorld(w));
+}
+
+/** Drop the suspend save (back on the page, a death, or arriving somewhere new). */
+export function clearSuspend(): void {
+  removeKey(SAVE_STORAGE_KEY);
+}
+
+/** Save a station arrival checkpoint — the only persistent save. Supersedes any suspend save. */
 export function saveStationSnapshot(w: WorldState): boolean {
   const raw = serializeWorld(w);
   memoryStationSnapshot = raw;
   w.lastSavedAt = Date.now();
-  const storage = getStorage();
-  if (!storage) return true;
-  try {
-    storage.setItem(SAVE_STATION_KEY, raw);
-    storage.setItem(SAVE_STORAGE_KEY, raw);
-    return true;
-  } catch {
-    return false;
-  }
+  removeKey(SAVE_STORAGE_KEY);
+  return writeKey(SAVE_STATION_KEY, raw);
 }
 
-export function loadWorld(key = SAVE_STORAGE_KEY): WorldState | null {
+function readKey(key: string): WorldState | null {
   const storage = getStorage();
   if (!storage) return null;
   try {
     const raw = storage.getItem(key);
-    if (!raw) return null;
-    return deserializeWorld(raw);
+    return raw ? deserializeWorld(raw) : null;
   } catch {
     return null;
   }
 }
 
+/** "Continue": the suspend save if there is one (read once, then deleted), else the station checkpoint. */
+export function loadWorld(): WorldState | null {
+  const suspended = readKey(SAVE_STORAGE_KEY);
+  removeKey(SAVE_STORAGE_KEY);
+  return suspended ?? loadStationSnapshot();
+}
+
 export function loadStationSnapshot(): WorldState | null {
-  const storage = getStorage();
-  if (storage) {
-    try {
-      const raw = storage.getItem(SAVE_STATION_KEY);
-      if (raw) {
-        const parsed = deserializeWorld(raw);
-        if (parsed) return parsed;
-      }
-    } catch {
-      // fall through to memory snapshot
-    }
-  }
+  const fromStorage = readKey(SAVE_STATION_KEY);
+  if (fromStorage) return fromStorage;
   return memoryStationSnapshot ? deserializeWorld(memoryStationSnapshot) : null;
 }
 
-export function getSaveSummary(key = SAVE_STORAGE_KEY): SaveSummary | null {
+function summaryFor(key: string): SaveSummary | null {
   const storage = getStorage();
   if (!storage) return null;
   try {
@@ -203,44 +251,25 @@ export function getSaveSummary(key = SAVE_STORAGE_KEY): SaveSummary | null {
       totalDistance: Math.round(st.totalDistance ?? 0),
       flatbedCount: st.flatbeds.length,
       coreCharge: +(st.boilerFuel ?? 0).toFixed(1),
+      suspended: key === SAVE_STORAGE_KEY,
+      onRoad: st.mode !== 'station',
     };
   } catch {
     return null;
   }
 }
 
-/** Seconds of play between automatic saves. */
-export const AUTOSAVE_INTERVAL = 60;
-
-/**
- * A calm moment to autosave: alive, not dying, nothing biting. Saving mid-fight would let
- * "continue" drop you back into a fight you were about to lose.
- */
-export function isSafeToAutosave(w: WorldState): boolean {
-  if (!w.player.alive || w.deathReport || w.gameOver || w.victory) return false;
-  if (w.player.hp < w.player.maxHp * 0.2) return false;
-  return !w.monsters.some((m) => m.hp > 0 && Math.hypot(m.x - w.player.x, m.y - w.player.y) < 170);
+/** What "continue" would load: the suspend save first, else the station checkpoint. */
+export function getSaveSummary(): SaveSummary | null {
+  return summaryFor(SAVE_STORAGE_KEY) ?? summaryFor(SAVE_STATION_KEY);
 }
 
-/** Autosave if it's a safe moment; `force` skips the combat check (page hidden / closing). */
-export function autosaveWorld(w: WorldState, force = false): boolean {
-  if (!w.player.alive || w.deathReport || w.gameOver || w.victory) return false;
-  if (!force && !isSafeToAutosave(w)) return false;
-  return saveWorld(w);
-}
-
-export function hasSavedWorld(key = SAVE_STORAGE_KEY): boolean {
-  return getSaveSummary(key) !== null;
+export function hasSavedWorld(): boolean {
+  return getSaveSummary() !== null;
 }
 
 export function clearSavedWorld(): void {
   memoryStationSnapshot = null;
-  const storage = getStorage();
-  if (!storage) return;
-  try {
-    storage.removeItem(SAVE_STORAGE_KEY);
-    storage.removeItem(SAVE_STATION_KEY);
-  } catch {
-    // ignore
-  }
+  removeKey(SAVE_STORAGE_KEY);
+  removeKey(SAVE_STATION_KEY);
 }

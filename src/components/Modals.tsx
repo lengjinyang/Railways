@@ -36,6 +36,7 @@ import {
   ZONE_WEATHER,
   canAffordCost,
   estimateRouteFuel,
+  describeSupplyForecast,
   findBuildingByUid,
   getAllChestGrids,
   getBuildingDisplayName,
@@ -401,7 +402,12 @@ export const Modals: React.FC<ModalsProps> = ({ world, menuOpen, muted, zoomPct,
           <p className="text-[13px] text-parchment-dim leading-relaxed mb-8 max-w-sm mx-auto">
             列车将回退至最近停靠的站点存档。
             <br />
-            车厢与设施不会随机丢失。
+            行囊里的东西可能散失一部分，车上箱子里的更安全。
+            {r.lossCarIdx !== null && (
+              <>
+                <br />第 {r.lossCarIdx + 1} 节车厢可能保不住；车头与第一节车厢不会丢。
+              </>
+            )}
           </p>
           <button onClick={actions.onRollbackStation} className="btn-primary px-7 py-2.5 text-[13px] tracking-wider">
             <RotateCcw className="w-4 h-4" />
@@ -462,7 +468,7 @@ export const Modals: React.FC<ModalsProps> = ({ world, menuOpen, muted, zoomPct,
                 </button>
                 <button onClick={actions.onManualSave} className="btn py-2.5 text-[12px]">
                   <Save className="w-4 h-4 text-patina" />
-                  保存进度
+                  暂离旅程
                 </button>
                 <button onClick={actions.onRestart} className="btn py-2.5 text-[12px] hover:!border-rust/60 hover:!text-[#f0a69b]">
                   <RotateCcw className="w-4 h-4 text-rust" />
@@ -793,6 +799,7 @@ export const Modals: React.FC<ModalsProps> = ({ world, menuOpen, muted, zoomPct,
         ) : (
           <div className="relative space-y-2.5 pl-5">
             <div className="text-[10.5px] text-ash -ml-5 mb-1">{world.availableRoutes.length} 条可选航线 · 选定后启动列车即出发</div>
+            <div className="text-[11px] text-parchment-dim -ml-5 mb-1.5">{describeSupplyForecast(world)}</div>
             {/* the line itself */}
             <div className="absolute left-[5px] top-3 bottom-3 w-px bg-gradient-to-b from-brass/50 via-brass/20 to-transparent" />
             {world.availableRoutes.map((r) => {
@@ -817,10 +824,10 @@ export const Modals: React.FC<ModalsProps> = ({ world, menuOpen, muted, zoomPct,
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-[14px] font-semibold tracking-wide" style={{ color: zm.color }}>
-                          {r.stationName}
+                          {r.boss ? r.stationName : `${zm.name} ${getZoneTierRoman(r.tier)}`}
                         </div>
                         <div className="text-[10.5px] text-ash font-mono mt-0.5">
-                          {zm.name} {getZoneTierRoman(r.tier)} · {r.distance}m · 约 {estMins} 分钟
+                          {r.boss ? `幕终 BOSS 站 · ${zm.name} ${getZoneTierRoman(r.tier)}` : '前方有一座站'} · {r.distance}m · 约 {estMins} 分钟
                         </div>
                       </div>
                       <button
@@ -836,8 +843,9 @@ export const Modals: React.FC<ModalsProps> = ({ world, menuOpen, muted, zoomPct,
                         )}
                       </button>
                     </div>
-                    <p className="text-[11.5px] text-parchment-dim leading-relaxed line-clamp-2" title={r.desc}>
-                      {r.desc}
+                    {/* Design §5.2: the station itself stays unknown until you arrive — only the stretch of land is described. */}
+                    <p className="text-[11.5px] text-parchment-dim leading-relaxed line-clamp-2" title={r.boss ? r.desc : zm.desc}>
+                      {r.boss ? r.desc : zm.desc}
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="chip">特产 · {zm.specialty}</span>

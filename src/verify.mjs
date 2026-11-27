@@ -4,6 +4,8 @@ import { createServer } from 'vite';
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
   const m = await server.ssrLoadModule('/src/world.ts');
+  const recipes = await server.ssrLoadModule('/src/recipes_v2.ts');
+  const inv = await server.ssrLoadModule('/src/inventory.ts');
 
   const idleInput = {
     up: false,
@@ -42,7 +44,11 @@ try {
   const strays = () => w.monsters.filter((mo) => !mo.nestUid).length; // nests breed on purpose
   const monstersBeforePark = strays();
   for (let i = 0; i < 200; i++) m.stepWorld(w, idleInput, 0.05); // 10s parked
-  assert.equal(w.boilerFuel, fuelBeforePark, 'Zero passive fuel decay while parked at station');
+  // Design §7: standing still still burns the firebox (warmth, cooking, light)
+  const idleBurn = fuelBeforePark - w.boilerFuel;
+  const expectedIdle = m.getIdleFuelPerSec(w) * 10;
+  assert.ok(Math.abs(idleBurn - expectedIdle) < 1e-6, `Parked firebox burns ${expectedIdle.toFixed(4)} in 10s, got ${idleBurn.toFixed(4)}`);
+  assert.ok(m.getIdleFuelPerSec(w) * 600 < 2.5, 'A 10-minute stop costs well under a quarter of the boiler');
   assert.equal(strays(), monstersBeforePark, 'Zero lingering wave spawns while parked');
   // Sections 2–4 measure economy on an idle player: keep combat out so nothing kills them mid-test
   const calm = () => {
@@ -100,34 +106,72 @@ try {
   for (let i = 0; i < 200; i++) m.stepWorld(w, idleInput, 0.05); // 10s watered
   assert.ok(planter.growth > 2.5 && planter.growth < 4.5, `Watered planter grows at ~5.5 min rate, got ${planter.growth.toFixed(2)}% in 10s`);
 
-  // 5. Turret balance (#4): range 260px, consumes bolts/ammo, stops when empty
+  // 5. Q12: the train doesn't fight in the demo — no turrets, no ram
   w.buildMode = true;
   w.selectedBuild = 'workbench';
   const wbPos = m.getTileCenter(0, 2, 1);
   assert.equal(m.tryPlaceBuilding(w, wbPos.x, wbPos.y), null);
+  assert.equal(recipes.BUILD_ORDER.includes('turret') || recipes.BUILD_ORDER.includes('bumper'), false, 'Turret and ram are off the build list');
+  m.giveItem(w, 'wood', 12);
+  m.giveItem(w, 'scrap', 12);
+  m.giveItem(w, 'parts', 4);
   w.selectedBuild = 'turret';
   const turPos = m.getTileCenter(0, 3, 1);
-  assert.equal(m.tryPlaceBuilding(w, turPos.x, turPos.y), null);
+  assert.notEqual(m.tryPlaceBuilding(w, turPos.x, turPos.y), null, 'Turret cannot be placed');
+  w.selectedBuild = 'bumper';
+  assert.notEqual(m.tryPlaceBuilding(w, m.LOCO_W + 20, 0), null, 'Ram cannot be placed');
   w.buildMode = false;
-  const turret = w.flatbeds[0].buildings.find((b) => b.type === 'turret');
-  assert.equal(m.upgradeBuildingInPlace(w, turret), null, 'T1 crossbow turret upgrades in-place to T2 machinegun turret');
-  assert.equal(turret.tier, 2);
-  m.giveItem(w, 'ammo', 2);
-  // Enemy at 340px (outside 260px range) -> should NOT fire!
-  w.monsters = [m.createMonster('hound', turPos.x + 340, turPos.y, false, 1)];
-  m.stepWorld(w, idleInput, 0.05);
-  assert.equal(m.getItemCount(w, 'ammo'), 2, 'Turret ignores targets beyond 260px');
-  // Move enemy within 180px -> fires & consumes 1 ammo!
-  w.monsters[0].x = turPos.x + 180;
-  m.stepWorld(w, idleInput, 0.05);
-  assert.equal(m.getItemCount(w, 'ammo'), 1, 'T2 turret consumes 1 ammo per shot');
-  // Drain remaining ammo -> turret marks outOfAmmo and stops firing
-  m.spendCost(w, { ammo: 1 });
-  turret.turretCooldown = 0;
-  w.projectiles = [];
-  m.stepWorld(w, idleInput, 0.05);
-  assert.equal(turret.turretOutOfAmmo, true, 'Turret stops firing when ammo is empty');
-  assert.equal(w.projectiles.length, 0);
+  assert.equal(w.flatbeds[0].buildings.some((b) => b.type === 'turret'), false);
+  assert.equal(w.hasBumper, false);
+  // An older save that still carries a turret and a ram gets them taken down, materials refunded
+  {
+    const old = m.createInitialWorld();
+    old.flatbeds[0].buildings.push({ uid: 'b_old_turret', type: 'turret', carIdx: 0, col: 3, row: 0, tier: 2, hp: 95, maxHp: 95 });
+    old.hasBumper = true;
+    old.selectedBuild = 'turret';
+    const scrapBefore = inv.countInInventory(old.backpack, 'scrap');
+    const loaded = m.deserializeWorld(m.serializeWorld(old));
+    assert.equal(loaded.flatbeds[0].buildings.some((b) => b.type === 'turret'), false, 'Loaded save has no turret');
+    assert.equal(loaded.hasBumper, false, 'Loaded save has no ram');
+    assert.equal(loaded.selectedBuild, 'workbench');
+    assert.equal(inv.countInInventory(loaded.backpack, 'scrap') - scrapBefore, 4 + 6, 'Turret + ram scrap refunded');
+  }
+
+  // 5b. Design §7: carriage upkeep each day, visible forecast
+  {
+    const u = m.createInitialWorld();
+    advanceToStation1(u);
+    u.monsters = [];
+    for (const pr of u.props) if (pr.kind === 'monster_nest') pr.nestTimer = 1e9;
+    u.nightWavesLeft = 0;
+    const cars = u.flatbeds.length;
+    assert.equal(m.getDailyUpkeepScrap(u), cars * m.CAR_UPKEEP_SCRAP);
+    // Enough scrap: paid at the next day
+    m.spendCost(u, { scrap: m.getItemCount(u, 'scrap') });
+    m.giveItem(u, 'scrap', 10);
+    u.dayCount = u.lastUpkeepDay + 1;
+    m.stepWorld(u, idleInput, 0.05);
+    assert.equal(m.getItemCount(u, 'scrap'), 10 - cars * m.CAR_UPKEEP_SCRAP, 'Upkeep paid at a new day');
+    assert.equal(u.lastUpkeepDay, u.dayCount);
+    // No scrap: hull wears but never breaches by itself
+    m.spendCost(u, { scrap: m.getItemCount(u, 'scrap') });
+    const hull = u.flatbeds[0].hull;
+    const hpBefore = hull.map((h) => h.hp);
+    u.dayCount += 1;
+    m.stepWorld(u, idleInput, 0.05);
+    hull.forEach((h, i) => {
+      if (hpBefore[i] > 0) assert.ok(h.hp >= 1 && h.hp <= Math.max(1, hpBefore[i] - m.CAR_UPKEEP_WEAR) + 1e-9, 'Unpaid carriage hull wears');
+    });
+    // Forecast reports something finite and names the scarce supply
+    const f = m.getSupplyForecast(u);
+    assert.equal(f.limiting, '废料', 'With no scrap, upkeep is what runs out first');
+    assert.equal(f.days, 0);
+    assert.ok(typeof m.describeSupplyForecast(u) === 'string');
+  }
+
+  // 5c. Design §5.2: a route offers a stretch of land, the station stays hidden until arrival —
+  //     every route still carries a zone + distance for the card to show.
+  assert.ok(routes.every((r) => r.zone && r.distance > 0));
 
   // 6. Finite outer exploration (#3): capped at ring 2, zero random ancient_vaults
   const wOuter = m.createInitialWorld();
@@ -146,24 +190,68 @@ try {
   const vaultsAfter = wOuter.props.filter((p) => p.kind === 'ancient_vault').length;
   assert.equal(vaultsAfter, vaultsBefore, 'Random outer chunks NEVER spawn ancient_vault relics');
 
-  // 7. Station Save & Death Rollback (#5): death does NOT delete carriages or strip backpack!
-  const wDeath = m.createInitialWorld();
-  advanceToStation1(wDeath);
-  m.giveItem(wDeath, 'coupler', 1);
-  m.giveItem(wDeath, 'scrap', 10);
-  m.giveItem(wDeath, 'wood', 10);
-  assert.equal(m.tryAttachCarriage(wDeath, true), null);
-  assert.equal(wDeath.flatbeds.length, 2);
-  m.saveStationSnapshot(wDeath);
-  const woodAtStation = m.getItemCount(wDeath, 'wood');
-  // Simulate player dying
-  wDeath.player.hp = 0;
-  m.stepWorld(wDeath, idleInput, 0.05);
-  assert.ok(wDeath.deathReport !== null, 'Triggers death report modal');
-  const rolled = m.rollbackToStationSave(wDeath);
-  assert.equal(rolled.flatbeds.length, 2, 'Station rollback preserves all carriages (no random car loss)');
-  assert.equal(m.getItemCount(rolled, 'wood'), woodAtStation, 'Station rollback preserves station inventory');
-  assert.equal(rolled.stats.deaths, 1, 'Preserves death count across rollback');
+  // 7. Design §6: death = back to the last station + a not-quite-random loss
+  const makeDeathWorld = () => {
+    const wd = m.createInitialWorld();
+    advanceToStation1(wd);
+    wd.monsters = [];
+    m.giveItem(wd, 'coupler', 2);
+    m.giveItem(wd, 'scrap', 20);
+    m.giveItem(wd, 'wood', 20);
+    assert.equal(m.tryAttachCarriage(wd, true), null);
+    assert.equal(m.tryAttachCarriage(wd, true), null);
+    assert.equal(wd.flatbeds.length, 3);
+    // Mark the cars so we can tell which one went
+    wd.flatbeds[1].baseWeight = 2.81;
+    wd.flatbeds[2].baseWeight = 2.82;
+    // Car 2 is battered
+    for (const h of wd.flatbeds[2].hull) h.hp = Math.min(h.hp, 20);
+    m.saveStationSnapshot(wd);
+    return wd;
+  };
+  {
+    // Fell on the locomotive: the most battered carriage is the one at risk; the first never is
+    const wDeath = makeDeathWorld();
+    wDeath.player.x = 100;
+    wDeath.player.y = 0;
+    wDeath.player.hp = 0;
+    m.stepWorld(wDeath, idleInput, 0.05);
+    assert.ok(wDeath.deathReport !== null, 'Triggers death report modal');
+    assert.equal(wDeath.deathReport.lossCarIdx, 2, 'Most battered carriage is at risk');
+    const rolled = m.rollbackToStationSave(wDeath, () => 0); // every roll loses
+    assert.equal(rolled.flatbeds.length, 2, 'One carriage lost');
+    assert.equal(rolled.flatbeds[0].baseWeight, 2.5, 'First carriage is never lost');
+    assert.equal(rolled.flatbeds[1].baseWeight, 2.81, 'The battered one went, not the other');
+    assert.equal(rolled.backpack.slots.every((s) => s === null), true, 'Backpack stacks can be lost');
+    assert.equal(rolled.stats.deaths, 1, 'Preserves death count across rollback');
+    assert.ok(rolled.zoneBanner && rolled.zoneBanner.subtitle.includes('第 3 节车厢'), 'Arrival banner names the loss');
+    // The checkpoint itself now reflects the loss — reloading can't undo it
+    assert.equal(m.loadStationSnapshot().flatbeds.length, 2);
+  }
+  {
+    // Lucky rolls: nothing lost
+    const wDeath = makeDeathWorld();
+    const woodAtStation = m.getItemCount(wDeath, 'wood');
+    wDeath.player.hp = 0;
+    m.stepWorld(wDeath, idleInput, 0.05);
+    const rolled = m.rollbackToStationSave(wDeath, () => 0.99);
+    assert.equal(rolled.flatbeds.length, 3, 'No carriage lost on a lucky roll');
+    assert.equal(m.getItemCount(rolled, 'wood'), woodAtStation, 'No items lost on a lucky roll');
+  }
+  {
+    // Fell inside carriage 2 (index 1): that one is at risk, even though carriage 3 is more battered
+    const wDeath = makeDeathWorld();
+    const c = m.getTileCenter(1, 2, 1);
+    wDeath.player.x = c.x;
+    wDeath.player.y = c.y;
+    wDeath.player.hp = 0;
+    m.stepWorld(wDeath, idleInput, 0.05);
+    assert.equal(wDeath.deathReport.lossCarIdx, 1, 'The carriage you fell in is at risk');
+    const rolled = m.rollbackToStationSave(wDeath, () => 0);
+    assert.equal(rolled.flatbeds[1].baseWeight, 2.82, 'Carriages behind close up the gap');
+    assert.equal(rolled.flatbeds[1].id, 1);
+    assert.ok(rolled.flatbeds[1].buildings.every((b) => b.carIdx === 1), 'Buildings are re-indexed');
+  }
 
   // 8. Facility-scoped crafting (D), lateral armor (G5), and hold-E container search (U1/U6)
   m.giveItem(w, 'hide', 8);
@@ -271,8 +359,16 @@ try {
     }
     for (const k of seen) assert.ok(k === 'clear' || k === zw.kind, `${zone} only gets its own weather (saw ${k})`);
   }
-  for (let i = 0; i < 5; i++) {
-    assert.ok(m.buildNextRoutes(i, false).length >= 3, `Station ${i} offers at least 3 routes`);
+  for (let i = 0; i < 6; i++) {
+    const rs = m.buildNextRoutes(i, false);
+    if (i === 3) {
+      // Design §5.2: every route of act 1 converges on the one BOSS station, known in advance
+      assert.equal(rs.length, 1, 'Act 1 converges on a single BOSS route');
+      assert.equal(rs[0].boss, true);
+    } else {
+      assert.ok(rs.length >= 3, `Station ${i} offers at least 3 routes`);
+      assert.ok(rs.every((r) => !r.boss));
+    }
   }
 
   // 13. Light pools, night hand-light, nest breeding & guardians, E never upgrades
@@ -381,19 +477,42 @@ try {
   assert.ok(burst.length >= 4, `A strong wave bursts out of the ruin (${burst.length})`);
   assert.ok(burst.some((mo) => mo.elite), 'The wave is led by an elite');
 
-  // 14. Autosave only at calm moments (forced when the page is left); never for a dead run
-  const wA = m.createInitialWorld();
-  wA.monsters = [];
-  assert.ok(m.isSafeToAutosave(wA), 'Calm moment allows autosave');
-  assert.ok(m.autosaveWorld(wA));
-  assert.ok(wA.lastSavedAt > 0, 'Autosave stamps lastSavedAt');
-  wA.monsters.push(m.createMonster('hound', wA.player.x + 60, wA.player.y, false, 1));
-  assert.equal(m.autosaveWorld(wA), false, 'No timed autosave with a monster on top of you');
-  assert.ok(m.autosaveWorld(wA, true), 'Leaving the page saves anyway');
-  wA.player.alive = false;
-  assert.equal(m.autosaveWorld(wA, true), false, 'A dead run is never autosaved');
-  const rt = m.deserializeWorld(m.serializeWorld(wA));
-  assert.ok(rt && rt.monsters.length === 1, 'Saved world round-trips');
+  // 14. Design §6: only station arrivals save; leaving the page writes a one-shot suspend save
+  {
+    const store = new Map();
+    globalThis.window = {
+      localStorage: {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => store.set(k, String(v)),
+        removeItem: (k) => store.delete(k),
+      },
+    };
+    try {
+      const wA = m.createInitialWorld();
+      advanceToStation1(wA); // arrival writes the station checkpoint
+      wA.monsters = [];
+      assert.equal(m.getSaveSummary().suspended, false, 'Arrival checkpoint is the save');
+      assert.equal(m.isSafeToAutosave, undefined, 'No timed autosave any more');
+      // Leave the page mid-run: a suspend save, read once by continue, then gone
+      wA.dayCount = 7;
+      assert.ok(m.saveSuspend(wA));
+      assert.equal(m.getSaveSummary().suspended, true, 'Continue offers the suspend save first');
+      const resumed = m.loadWorld();
+      assert.equal(resumed.dayCount, 7, 'Continue resumes where you left');
+      assert.equal(m.getSaveSummary().suspended, false, 'Suspend save is deleted once read');
+      assert.notEqual(m.loadWorld().dayCount, 7, 'Second continue falls back to the station checkpoint');
+      // A dead run is never suspended, and dying drops any suspend save
+      assert.ok(m.saveSuspend(wA));
+      wA.player.hp = 0;
+      m.stepWorld(wA, idleInput, 0.05);
+      assert.equal(m.getSaveSummary().suspended, false, 'Death clears the suspend save');
+      assert.equal(m.saveSuspend(wA), false, 'A dead run is never suspended');
+      const rt = m.deserializeWorld(m.serializeWorld(wA));
+      assert.ok(rt && rt.flatbeds.length === wA.flatbeds.length, 'Saved world round-trips');
+    } finally {
+      delete globalThis.window;
+    }
+  }
 
   // 15. Swings cost real stamina, refill waits a moment and is slow; weapons hit softer
   const wSt = m.createInitialWorld();
@@ -477,6 +596,203 @@ try {
   assert.equal(m.getItemCount(wC, 'gearCrossbow'), 2, 'and a third');
   m.stepWorld(wC, idleInput, 0.016);
   assert.equal(m.getItemCount(wC, 'gearCrossbow'), 2, 'Spares are not auto-consumed once you own one');
+
+  // 20. Design §5.3: an elite sleeps on the exit track; the train can't leave until it's beaten
+  const stationWithGuard = (boss = false) => {
+    const ws = m.createInitialWorld();
+    advanceToStation1(ws);
+    ws.stationIdx = 1;
+    if (boss) ws.selectedRoute = m.buildNextRoutes(3, false)[0];
+    m.buildStationMap(ws, 'rust_plains', boss ? 4 : 1, 'test', 'abandoned_halt', 0, true);
+    ws.mode = 'station';
+    ws.trainSpeed = 0;
+    ws.gear = 0;
+    for (const pr of ws.props) if (pr.kind === 'monster_nest') pr.nestTimer = 1e9;
+    ws.monsters = ws.monsters.filter((mo) => mo.guard);
+    ws.player.x = 136;
+    ws.player.y = 0;
+    return ws;
+  };
+  const hitWith = (ws, mo, dmg) => {
+    ws.projectiles.push({ x: mo.x, y: mo.y, vx: 0, vy: 0, dmg, ttl: 0.5, fromTurret: false, kind: 'bolt' });
+    m.stepWorld(ws, idleInput, 0.016);
+  };
+  {
+    const ws = stationWithGuard();
+    const g = m.getExitGuard(ws);
+    assert.ok(g && g.guard.asleep, 'Exit guard sleeps on the rails');
+    assert.ok(Math.abs(g.y) < 1 && g.x > m.LOCO_W, 'It lies on the track ahead of the locomotive');
+    ws.selectedRoute = ws.availableRoutes[0];
+    assert.match(m.setThrottleGear(ws, 2) ?? '', /守关者/, 'Lever refuses while it lives');
+    m.alertMonstersByNoise(ws, g.x, g.y, 500);
+    m.stepWorld(ws, idleInput, 0.05);
+    assert.equal(g.guard.asleep, true, 'Scavenging noise does not wake it');
+    ws.player.x = g.x - 150;
+    ws.player.y = 0;
+    m.stepWorld(ws, idleInput, 0.05);
+    assert.equal(g.guard.asleep, false, 'Coming close wakes it');
+    // hole up on the train: it batters the train a while, then goes home and heals a little
+    g.hp = Math.round(g.maxHp * 0.5);
+    let slept = false;
+    for (let i = 0; i < 900 && !slept; i++) {
+      ws.player.hp = ws.player.maxHp;
+      ws.player.x = 60;
+      ws.player.y = 0;
+      m.stepWorld(ws, idleInput, 0.05);
+      slept = g.guard.asleep;
+    }
+    assert.ok(slept, 'Guard gives up on the train and goes back to sleep on its rails');
+    assert.ok(g.hp > g.maxHp * 0.6 && g.hp < g.maxHp * 0.7, `and heals a little (${(g.hp / g.maxHp).toFixed(2)})`);
+    hitWith(ws, g, 99999);
+    assert.equal(m.getExitGuard(ws), null, 'Guard beaten');
+    ws.player.x = 136;
+    ws.player.y = 0;
+    assert.equal(m.setThrottleGear(ws, 2), null, 'Exit track clear: the train can leave');
+  }
+  {
+    // The act-end BOSS: every route converges on it; it fights in phases
+    const ws = stationWithGuard(true);
+    const b = m.getExitGuard(ws);
+    assert.ok(b.boss && b.title === '铁闸之主', 'BOSS station has its BOSS on the exit track');
+    const before = ws.monsters.length;
+    hitWith(ws, b, Math.ceil(b.maxHp * 0.4));
+    assert.equal(b.boss.phase, 1, 'BOSS enters phase 2 below 2/3 hp');
+    assert.ok(ws.monsters.length >= before + 3, 'and calls in a pack');
+    hitWith(ws, b, 99999);
+    assert.equal(ws.stats.bossesKilled, 1);
+    assert.equal(ws.zoneBanner.title, '第一幕 · 终');
+  }
+  {
+    const w0 = m.createInitialWorld();
+    advanceToStation1(w0);
+    assert.equal(m.getExitGuard(w0), null, 'First station has no exit guard');
+  }
+
+  // 21. Design §4.3: boarders chase, leap and cling; each kind does its own thing; hit them from inside
+  const roadWorld = () => {
+    const wr = m.createInitialWorld();
+    advanceToStation1(wr);
+    wr.mode = 'wasteland';
+    wr.props = [];
+    wr.monsters = [];
+    wr.roadEvents = [];
+    wr.trainSpeed = 0;
+    wr.gear = 0;
+    wr.player.x = 100;
+    wr.player.y = 0;
+    return wr;
+  };
+  const runUntil = (wr, pred, secs) => {
+    for (let i = 0; i < secs * 20 && !pred(); i++) {
+      wr.player.hp = wr.player.maxHp;
+      m.stepWorld(wr, idleInput, 0.05);
+    }
+    return pred();
+  };
+  {
+    const wr = roadWorld();
+    const [rip] = m.spawnBoarders(wr, 1, 1, ['ripper']);
+    assert.ok(runUntil(wr, () => rip.board.phase === 'latched', 15), 'Ripper runs the train down and latches on');
+    const panel = m.getAllHullPanels(wr).find((r) => r.panel.uid === rip.board.panelUid).panel;
+    const hp0 = panel.hp;
+    wr.trainSpeed = 130;
+    wr.gear = 2;
+    const x0 = rip.x;
+    runUntil(wr, () => false, 3);
+    assert.ok(Math.abs(rip.x - x0) < 1, 'Latched boarder rides with the train');
+    assert.ok(panel.hp < hp0, 'Ripper tears at its plate');
+    hitWith(wr, rip, 9999);
+    assert.ok(wr.pickups.length > 0 && wr.pickups.every((pk) => pk.onTrain), 'Boarder loot drops inside the train');
+  }
+  {
+    const wr = roadWorld();
+    for (const { panel } of m.getAllHullPanels(wr)) if (panel.isDoor) panel.doorOpen = false;
+    const [borer] = m.spawnBoarders(wr, 1, 1, ['borer']);
+    assert.ok(runUntil(wr, () => borer.board?.phase === 'latched', 15), 'Borer latches on');
+    runUntil(wr, () => borer.onTrain, 8);
+    assert.equal(borer.onTrain, false, 'A shut train keeps the borer out');
+    const side = borer.board.side;
+    const door = m.getAllHullPanels(wr).find((r) => r.panel.isDoor && r.panel.side === side).panel;
+    door.doorOpen = true;
+    assert.ok(runUntil(wr, () => borer.onTrain, 20), 'Borer crawls to the open door and climbs in');
+    assert.equal(borer.board, undefined);
+  }
+  {
+    const wr = roadWorld();
+    m.giveItem(wr, 'wood', 10);
+    wr.buildMode = true;
+    wr.selectedBuild = 'planter';
+    const pc = m.getTileCenter(0, 4, 2);
+    assert.equal(m.tryPlaceBuilding(wr, pc.x, pc.y), null);
+    wr.buildMode = false;
+    const pl = wr.flatbeds[0].buildings.find((b) => b.type === 'planter');
+    pl.planted = true;
+    pl.growth = 50;
+    pl.watered = 999;
+    const [cr] = m.spawnBoarders(wr, 1, 1, ['creeper']);
+    assert.ok(runUntil(wr, () => !pl.planted, 40), 'Creeper crawls to the crops and wrecks them through the wall');
+    assert.ok(cr.board && cr.board.phase === 'latched');
+  }
+
+  // 22. Design §4.2: road events — a handful per leg, one or two light raids, no repeats, one-offs once
+  {
+    const wr = roadWorld();
+    wr.stationIdx = 2;
+    for (let t = 0; t < 30; t++) {
+      const plan = m.planRoadEvents(wr, 4000, 'rust_plains');
+      assert.ok(plan.length >= 3 && plan.length <= 5, 'A handful of events per leg');
+      assert.ok(plan.some((e) => e.kind === 'boarders'), 'At least one light raid');
+      assert.ok(plan.filter((e) => e.kind === 'boarders').length <= 2, 'At most two raids');
+      const others = plan.filter((e) => e.kind !== 'boarders').map((e) => e.kind);
+      assert.equal(new Set(others).size, others.length, 'No repeats within a leg');
+      assert.ok(plan.every((e, i) => e.at > 0.1 && e.at < 0.9 && (i === 0 || e.at > plan[i - 1].at)), 'Spread along the leg');
+    }
+    wr.eventFlags = { seen_graves: true, seen_ghost_train: true };
+    for (let t = 0; t < 30; t++) {
+      const kinds = m.planRoadEvents(wr, 4000, 'rust_plains').map((e) => e.kind);
+      assert.ok(!kinds.includes('graves') && !kinds.includes('ghost_train'), 'One-off events happen once per run');
+    }
+    assert.equal(m.meetWaver(wr, 0, 0, () => 0), 'helped');
+    let sawReturn = false;
+    for (let t = 0; t < 40 && !sawReturn; t++) sawReturn = m.planRoadEvents(wr, 4000, 'rust_plains').some((e) => e.kind === 'waver_return');
+    assert.ok(sawReturn, 'Helping the mutant unlocks its chained follow-up');
+    // A raid is warned about first, then arrives
+    wr.roadEvents = [{ at: 0.2, kind: 'boarders', fired: false }];
+    wr.legDistance = wr.legTotal * 0.3;
+    m.stepWorld(wr, idleInput, 0.05);
+    assert.equal(wr.wavePhase, 'omen', 'Raid comes with a warning');
+    assert.ok(wr.omenLabel.length > 0);
+    runUntil(wr, () => wr.wavePhase === 'danger', 10);
+    assert.ok(wr.monsters.some((mo) => mo.board), 'then boarders arrive');
+    // Stopping out here no longer summons a siege
+    wr.monsters = [];
+    wr.roadEvents = [];
+    wr.pendingOmen = null;
+    runUntil(wr, () => false, 20);
+    assert.equal(wr.monsters.length, 0, 'Stopping in the wasteland summons nothing by itself');
+  }
+
+  // 23. Uncoupling, and no more timed night raids
+  {
+    const wu = m.createInitialWorld();
+    advanceToStation1(wu);
+    m.giveItem(wu, 'coupler', 2);
+    m.giveItem(wu, 'scrap', 20);
+    m.giveItem(wu, 'wood', 20);
+    m.tryAttachCarriage(wu, true);
+    m.tryAttachCarriage(wu, true);
+    assert.equal(m.uncoupleFrom(wu, 0), 0, 'The core carriage cannot be uncoupled');
+    assert.equal(m.uncoupleFrom(wu, 1), 2, 'Uncoupling drops that carriage and all behind it');
+    assert.equal(wu.flatbeds.length, 1);
+    wu.monsters = [];
+    for (const pr of wu.props) if (pr.kind === 'monster_nest') pr.nestTimer = 1e9;
+    wu.dayTime = 0.74;
+    for (let i = 0; i < 800; i++) {
+      wu.player.hp = wu.player.maxHp;
+      m.stepWorld(wu, idleInput, 0.05);
+    }
+    assert.equal(wu.nightWavesLeft, 0, 'Nightfall no longer schedules raids');
+  }
 
   console.log('ALL PENDING_FIXES VERIFICATION CHECKS PASSED!');
 } finally {

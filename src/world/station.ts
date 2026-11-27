@@ -1,6 +1,7 @@
 import { addToInventory, createInventory, type ResourceKey } from '../inventory';
 import { sfx } from '../sfx';
 import {
+  LOCO_W,
   OUTER_MAX_RING,
   STATION_BOUND_X,
   STATION_BOUND_Y,
@@ -188,6 +189,22 @@ export function buildNextRoutes(stationIdx: number, endlessMode = false): RouteO
     ];
   }
   if (stationIdx === 3 && !endlessMode) {
+    // Design §5.2: every route of the act converges on one fixed BOSS station, known in advance.
+    return [
+      {
+        id: 'act1_boss',
+        stationName: '第一幕终点 · 熔铁闸口',
+        template: 'abandoned_halt',
+        zone: 'rust_plains',
+        tier: 4,
+        distance: 4200,
+        warningTag: 'BOSS · 必经之站',
+        desc: '所有铁轨都汇到这座闸口。出站的轨道上蜷着一头巨大的冲撞兽，铁轨被它啃得发亮——不打倒它，列车出不去。',
+        boss: true,
+      },
+    ];
+  }
+  if (stationIdx === 4 && !endlessMode) {
     return [
       {
         id: 'st4_sinking_deep',
@@ -715,6 +732,9 @@ export function buildStationMap(
     );
   }
 
+  // Design §5.3: past the first stop, an elite (or the act's BOSS) sleeps on the exit track.
+  if (w.stationIdx >= 1) w.monsters.push(createExitGuard(zone, tier, !!w.selectedRoute?.boss));
+
   if (anchorOffsetX !== 0) {
     for (const rd of w.stationRoads) rd.x += anchorOffsetX;
     for (const rm of w.stationRooms) rm.x += anchorOffsetX;
@@ -737,6 +757,36 @@ export function buildStationMap(
   if (prevOnTrainMonsters.length > 0) {
     w.monsters.push(...prevOnTrainMonsters);
   }
+}
+
+/** Where the exit guardian sleeps: on the rails, a short way ahead of where the locomotive stops. */
+export const EXIT_GUARD_DX = LOCO_W + 340;
+
+/**
+ * The exit-track guardian (station-local coordinates; the anchor offset is applied with everything else).
+ * A BOSS is a much bigger charger that fights in phases.
+ */
+export function createExitGuard(zone: Exclude<ZoneKind, 'fallen_city'>, tier: ZoneTier, boss: boolean): MonsterEntity {
+  const gTier = Math.min(5, tier + 1) as ZoneTier;
+  let kind: MonsterKind = boss ? 'charger' : pickZoneEnemyKind(zone, gTier);
+  if (kind === 'burrower' || kind === 'sandworm' || kind === 'nightwalker') kind = 'stalker';
+  const m = createMonster(kind, EXIT_GUARD_DX, 0, false, gTier, undefined, true);
+  m.guard = { homeDX: EXIT_GUARD_DX, homeY: 0, asleep: true, pressure: 0, returning: false };
+  m.aiState = 'wander';
+  m.title = boss ? '铁闸之主' : '守关者';
+  if (boss) {
+    m.maxHp = Math.round(m.maxHp * 2.6);
+    m.hp = m.maxHp;
+    m.r = Math.round(m.r * 1.3);
+    m.dps = +(m.dps * 1.15).toFixed(1);
+    m.boss = { phase: 0 };
+  }
+  return m;
+}
+
+/** The exit guardian of this station, while it lives. */
+export function getExitGuard(w: WorldState): MonsterEntity | null {
+  return w.monsters.find((m) => m.guard && m.hp > 0) ?? null;
 }
 
 /** An elite guarding (or bursting out of) a nest. Deeper zones field nastier breeds. */
