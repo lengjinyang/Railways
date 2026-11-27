@@ -1,555 +1,605 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Heart,
-  Zap,
   Utensils,
   Droplets,
   Thermometer,
-  Flame,
-  Compass,
+  Activity,
   Map as MapIcon,
-  Flashlight,
-  Hammer,
-  Backpack,
   Wrench,
-  Volume2,
-  VolumeX,
-  RotateCcw,
-  ZoomIn,
-  HelpCircle,
-  AlertTriangle,
-  Sparkles,
+  Crosshair,
+  Hammer,
+  Lamp,
+  Package,
+  BrickWall,
+  Lock,
   TrainFront,
-  Scale,
 } from 'lucide-react';
-import { BUILD_ORDER, BUILDINGS, type BuildingType } from '../recipes_v2';
+import { BUILDINGS, type BuildingType } from '../recipes_v2';
 import {
   GEAR_LABELS,
+  HALF_H,
   ITEM_META,
+  LOCO_W,
+  MELEE_META,
+  RANGED_META,
   TOOL_META,
   ZONE_META,
   canAffordCost,
-  estimateRouteFuel,
-  getActiveQuest,
-  getAllChestGrids,
+  describeSupplyForecast,
+  getCarBounds,
   getClockLabel,
-  getDayPhaseLabel,
-  getGridUsedCells,
+  getHotbarBindings,
+  getHullIntegrity,
   getItemCount,
   getTractionLimit,
   getTrainWeight,
   getWeatherLabel,
-  getZoneTierRoman,
   hasWorkbench,
   isOverloaded,
-  playerHasActiveLantern,
   type GearLevel,
+  type HotbarBinding,
   type HotbarSlot,
   type ResourceKey,
   type WorldState,
 } from '../world';
+import { ItemGlyph } from './ItemGlyph';
+import { acceptsDrag, readDrag, startDrag } from './dnd';
 
 export interface HudActions {
-  onShiftGearTo: (gear: GearLevel) => void;
+  onSetThrottleGear: (gear: GearLevel) => void;
   onToggleRoute: () => void;
-  onToggleLight: () => void;
-  onToggleBuild: () => void;
-  onToggleBag: () => void;
-  onToggleCraft: () => void;
-  onResetZoom: () => void;
-  onToggleHelp: () => void;
-  onToggleMute: () => void;
-  onRestart: () => void;
   onSelectHotbar: (slot: HotbarSlot) => void;
   onSelectBuild: (bId: BuildingType) => void;
+  onToggleBuild: () => void;
+  onToggleLantern: () => void;
+  onBindItem: (slot: number, key: ResourceKey) => void;
+  onSwapHotbar: (a: number, b: number) => void;
+  onClearHotbar: (slot: number) => void;
 }
 
 interface HudProps {
   world: WorldState;
-  muted: boolean;
-  zoomPct: number;
   actions: HudActions;
 }
 
-function formatCostShort(cost: Partial<Record<ResourceKey, number>>): string {
-  return Object.entries(cost)
-    .filter(([, v]) => (v ?? 0) > 0)
-    .map(([k, v]) => `${ITEM_META[k as ResourceKey]?.short ?? k}${v}`)
-    .join(' ');
-}
+const clampPct = (n: number) => Math.max(0, Math.min(100, n));
 
-const VitalBar: React.FC<{
-  icon: React.ReactNode;
-  label: string;
-  pct: number;
-  valueText: string;
-  barClass: string;
-  danger?: boolean;
-}> = ({ icon, label, pct, valueText, barClass, danger }) => (
-  <div className={`flex items-center gap-2 text-xs ${danger ? 'text-red-300 font-semibold' : 'text-stone-300'}`}>
-    <span className={`w-4 h-4 flex items-center justify-center shrink-0 ${danger ? 'text-red-400 animate-pulse' : 'text-stone-400'}`}>
+const BUILD_CATEGORIES: Array<{ id: string; label: string; icon: React.ReactNode; items: BuildingType[] }> = [
+  { id: 'craft', label: '工坊', icon: <Hammer className="w-4 h-4" />, items: ['workbench', 'campfire', 'rain_collector', 'planter'] },
+  { id: 'living', label: '起居', icon: <Package className="w-4 h-4" />, items: ['chest', 'bed', 'lantern'] },
+  { id: 'structure', label: '构造', icon: <BrickWall className="w-4 h-4" />, items: ['wood_wall', 'door', 'crystal_pylon'] },
+];
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Vitals — compact gauges centred above the hotbar
+   ────────────────────────────────────────────────────────────────────────── */
+const Vital: React.FC<{ icon: React.ReactNode; label: string; pct: number; color: string; danger?: boolean }> = ({
+  icon,
+  label,
+  pct,
+  color,
+  danger,
+}) => (
+  <div className="flex items-center gap-1.5" title={`${label} ${Math.round(pct)}%`}>
+    <span className={`w-3.5 h-3.5 flex items-center justify-center shrink-0 ${danger ? 'text-rust anim-heartbeat' : 'text-ash'}`}>
       {icon}
     </span>
-    <span className="w-9 shrink-0 truncate">{label}</span>
-    <div className="gauge-track flex-1 h-2 rounded-full overflow-hidden border border-white/10">
-      <div
-        className={`h-full transition-all duration-100 rounded-full ${barClass}`}
-        style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
-      />
+    <div className="meter meter-ticks w-[84px] h-[5px]">
+      <div className="meter-fill" style={{ width: `${clampPct(pct)}%`, backgroundColor: danger ? '#dc5f4f' : color }} />
     </div>
-    <span className="w-12 text-right font-mono tabular-nums text-[11px]">{valueText}</span>
+    <span className={`w-[22px] text-right font-mono text-[10px] ${danger ? 'text-rust' : 'text-ash-dim'}`}>
+      {Math.round(clampPct(pct))}
+    </span>
   </div>
 );
 
-export const HudPanels: React.FC<HudProps> = ({ world, muted, zoomPct, actions }) => {
+const Readout: React.FC<{ label: string; value: React.ReactNode; tone?: string; children?: React.ReactNode }> = ({
+  label,
+  value,
+  tone = 'text-parchment',
+  children,
+}) => (
+  <div className="flex flex-col gap-1 min-w-[64px]">
+    <span className="text-[9.5px] tracking-[0.18em] text-ash-dim">{label}</span>
+    <span className={`font-mono text-[12px] leading-none ${tone}`}>{value}</span>
+    {children}
+  </div>
+);
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Hotbar slot
+   ────────────────────────────────────────────────────────────────────────── */
+interface SlotView {
+  icon: React.ReactNode;
+  name: string;
+  count?: number;
+  sub?: string;
+  empty?: boolean;
+  title: string;
+}
+
+function describeBinding(w: WorldState, b: HotbarBinding): SlotView {
+  const p = w.player;
+  if (!b) return { icon: null, name: '', empty: true, title: '空槽 · 从行囊拖入物品' };
+  if (b.kind === 'tool') {
+    const melee = MELEE_META[p.meleeWeapon];
+    return {
+      icon: <Wrench className="w-[18px] h-[18px]" />,
+      name: TOOL_META[p.toolLevel].short,
+      sub: p.meleeWeapon === 'axe' ? '斧' : `Lv${p.toolLevel}`,
+      title: `${TOOL_META[p.toolLevel].name} / ${melee.name}\n左键挥击 · 采集 · 修理`,
+    };
+  }
+  if (b.kind === 'ranged') {
+    const meta = RANGED_META[b.weapon];
+    const owned = p.ownedRangedWeapons.includes(b.weapon);
+    return {
+      icon: <Crosshair className="w-[18px] h-[18px]" />,
+      name: meta.short,
+      count: meta.ammoKey ? getItemCount(w, meta.ammoKey) : undefined,
+      sub: owned ? undefined : '未持有',
+      title: `${meta.name}\n${meta.desc}`,
+    };
+  }
+  const meta = ITEM_META[b.key];
+  const cnt = getItemCount(w, b.key);
+  const hold = b.key !== 'decoys' && b.key !== 'rails';
+  return {
+    icon: <ItemGlyph itemKey={b.key} size={22} dim={cnt === 0} />,
+    name: meta.short,
+    count: cnt,
+    sub: hold ? '长按' : undefined,
+    title: `${meta.name}\n${meta.desc}`,
+  };
+}
+
+/** Wave marks along a wasteland leg (must match the simulation's wave pacing). */
+
+function formatEta(sec: number): string {
+  if (!isFinite(sec) || sec <= 0) return '';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return m > 0 ? `约 ${m}:${String(s).padStart(2, '0')}` : `约 ${s}s`;
+}
+
+/** Top-centre journey strip while driving: where you're headed, how far, how long. (No danger markers — design §12.1.) */
+const LegProgress: React.FC<{ world: WorldState }> = ({ world }) => {
+  const total = Math.max(1, world.legTotal);
+  const done = Math.min(total, Math.max(0, world.legDistance));
+  const pct = (done / total) * 100;
+  const left = Math.max(0, Math.round(total - done));
+  const dest = world.mode === 'city_escape' ? '锈原 · 废弃小站' : world.selectedRoute ? (world.selectedRoute.boss ? world.selectedRoute.stationName : `${ZONE_META[world.selectedRoute.zone].name}的某座站`) : '下一站';
+  const mps = world.trainSpeed / 18;
+  const eta = mps > 0.5 ? formatEta((total - done) / mps) : '';
+  return (
+    <div className="fixed top-3.5 left-1/2 -translate-x-1/2 w-[min(440px,46vw)] text-engraved anim-fade-in">
+      <div className="flex items-baseline justify-between gap-3 mb-1.5 px-0.5">
+        <span className="text-[11px] text-parchment-dim truncate">
+          <span className="text-ash mr-1.5">前往</span>
+          <span className="text-parchment font-semibold">{dest}</span>
+        </span>
+        <span className="font-mono text-[11px] whitespace-nowrap">
+          <span className="text-brass-hi font-semibold">{left}m</span>
+          <span className="text-ash ml-2">{eta || (world.trainSpeed < 1 ? '停车中' : '')}</span>
+        </span>
+      </div>
+      <div className="relative h-[6px] rounded-full bg-black/55 ring-1 ring-brass/25">
+        <div
+          className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brass/70 to-brass-hi"
+          style={{ width: `${pct}%`, transition: 'width 300ms linear' }}
+        />
+        {/* the train */}
+        <span
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[11px] h-[11px] rounded-full bg-parchment ring-2 ring-brass shadow-[0_0_8px_rgb(237_196_124/0.6)]"
+          style={{ left: `${pct}%`, transition: 'left 300ms linear' }}
+        />
+        {/* destination */}
+        <span className="absolute top-1/2 -translate-y-1/2 right-[-3px] w-[9px] h-[9px] rounded-[2px] bg-black ring-1 ring-brass-hi" />
+      </div>
+    </div>
+  );
+};
+
+/* ──────────────────────────────────────────────────────────────────────────
+   HUD
+   ────────────────────────────────────────────────────────────────────────── */
+export const HudPanels: React.FC<HudProps> = ({ world, actions }) => {
   const p = world.player;
   const weight = getTrainWeight(world);
   const traction = getTractionLimit(world);
   const overloaded = isOverloaded(world);
-  const quest = getActiveQuest(world);
-  const zm = ZONE_META[world.zoneKind];
   const wb = hasWorkbench(world);
+  const bindings = getHotbarBindings(world);
 
-  const cFuel = getItemCount(world, 'fuel');
-  const cWood = getItemCount(world, 'wood');
-  const cScrap = getItemCount(world, 'scrap');
-  const cParts = getItemCount(world, 'parts');
-  const cWater = getItemCount(world, 'water');
-  const cFood = getItemCount(world, 'cookedFood') + getItemCount(world, 'rawFood') + getItemCount(world, 'arcanePotion');
-  const cAmmo = getItemCount(world, 'ammo');
-  const cRails = getItemCount(world, 'rails');
-  const cCoupler = getItemCount(world, 'coupler') + getItemCount(world, 'crudeCoupler');
-  const cMagic = getItemCount(world, 'magicShard');
-  const cRelic = getItemCount(world, 'ancientRelic');
-  const chestCount = getAllChestGrids(world).length;
-  const bagUsed = getGridUsedCells(world.backpack);
-  const bagCap = world.backpack.cols * world.backpack.rows;
-  const lanternActive = playerHasActiveLantern(world);
+  const [dropTarget, setDropTarget] = useState<number | null>(null);
+  const initialCat = BUILD_CATEGORIES.find((c) => c.items.includes(world.selectedBuild))?.id ?? 'craft';
+  const [buildCat, setBuildCat] = useState(initialCat);
 
-  const tMeta = TOOL_META[p.toolLevel];
-  const hotbarItems: Array<{ icon: string; name: string; cnt?: number; sub?: string }> = [
-    { icon: tMeta.icon, name: tMeta.short, sub: `Lv.${p.toolLevel}` },
-    { icon: '🔫', name: '霰弹枪', cnt: cAmmo },
-    { icon: '🛤', name: '铁轨段', cnt: cRails },
-    { icon: '🥖', name: '吃喝', cnt: cFood },
-    { icon: '🍖', name: '诱饵', cnt: getItemCount(world, 'decoys') },
-    { icon: '🔨', name: '建造锤' },
-  ];
+  // Auto-hide vitals when healthy and unchanged for 5s
+  const vitalsHealthy =
+    p.hp >= p.maxHp * 0.92 &&
+    p.hunger >= 75 &&
+    p.thirst >= 75 &&
+    p.bodyTemp >= 85 &&
+    p.sickTimer <= 0 &&
+    p.stamina >= p.maxStamina * 0.9;
+  const showVitals = !vitalsHealthy || world.time - world.lastVitalChangeAt < 5.0 || world.bagOpen;
 
-  const zoneTitle =
-    world.zoneKind === 'fallen_city'
-      ? `${zm.icon} ${zm.name} · 逃离中`
-      : `${zm.icon} ${zm.name} · 等级 ${getZoneTierRoman(world.zoneTier)}`;
+  const sidebarDocked =
+    world.bagOpen || world.routeOpen || world.tradeOpen || world.openContainerUid !== null || world.openFacilityUid !== null;
 
-  const selRoute = world.selectedRoute;
-  const estCruise = selRoute ? estimateRouteFuel(world, selRoute.distance, 2) : 0;
-  const totalFuelNow = +(world.boilerFuel + cFuel).toFixed(1);
+  const fuelPct = (world.boilerFuel / Math.max(1, world.boilerMax)) * 100;
+  const pressureHot = world.boilerPressure > 80;
+  const fuelLow = world.boilerFuel <= 2.5;
 
-  const showBuildBar = world.buildMode || world.hotbar === 5;
+  // Hull integrity: only when it matters (damaged AND under threat / building / driving / badly hurt)
+  const hull = getHullIntegrity(world);
+  const trainLeft = getCarBounds(Math.max(0, world.flatbeds.length - 1)).left;
+  const attackersNear = world.monsters.some(
+    (m) => m.hp > 0 && m.x > trainLeft - 180 && m.x < LOCO_W + 180 && Math.abs(m.y) < HALF_H + 200
+  );
+  const damaged = hull.pct < 99.5 || hull.locoPct < 99.5;
+  const showHull =
+    damaged &&
+    (attackersNear ||
+      world.wavePhase === 'danger' ||
+      world.buildMode ||
+      world.throttleOpen ||
+      hull.pct < 60 ||
+      hull.brokenPanels > 0);
+
   const selBuildDef = BUILDINGS[world.selectedBuild];
-  const nextWeightIfPlaced = +(weight + selBuildDef.weight).toFixed(1);
+  const nextWeight = +(weight + selBuildDef.weight).toFixed(1);
+  const cat = BUILD_CATEGORIES.find((c) => c.id === buildCat) ?? BUILD_CATEGORIES[0];
+
+  const onSlotDrop = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    setDropTarget(null);
+    const d = readDrag(e);
+    if (!d) return;
+    if (d.src === 'hotbar') actions.onSwapHotbar(d.idx, idx);
+    else if (d.key) actions.onBindItem(idx, d.key);
+  };
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-3">
-      {/* TOP BAR ROW */}
-      <div className="flex items-start justify-between gap-3">
-        {/* TOP-LEFT: Vitals + Locomotive Telemetry + Quest */}
-        <div className="pointer-events-auto flex flex-col gap-2 w-[268px] shrink-0">
-          {/* Survival Vitals */}
-          <div className={`brass-panel rounded-xl p-3 space-y-1.5 ${p.hp <= 30 ? 'animate-danger-glow border-red-500/70' : ''}`}>
-            <VitalBar
-              icon={<Heart className="w-3.5 h-3.5" />}
-              label="生命"
-              pct={(p.hp / p.maxHp) * 100}
-              valueText={`${Math.ceil(p.hp)}/${p.maxHp}`}
-              barClass="bg-gradient-to-r from-red-600 to-rose-400"
-              danger={p.hp <= 30}
-            />
-            <VitalBar
-              icon={<Zap className="w-3.5 h-3.5" />}
-              label={p.wellFedTimer > 0 ? '精力' : '体力'}
-              pct={(p.stamina / p.maxStamina) * 100}
-              valueText={`${Math.ceil(p.stamina)}`}
-              barClass={
-                p.wellFedTimer > 0
-                  ? 'bg-gradient-to-r from-amber-500 to-yellow-300'
-                  : 'bg-gradient-to-r from-sky-600 to-cyan-400'
-              }
-            />
-            <VitalBar
-              icon={<Utensils className="w-3.5 h-3.5" />}
-              label="饱食"
-              pct={p.hunger}
-              valueText={p.wellFedTimer > 0 ? `${Math.ceil(p.wellFedTimer)}s` : `${Math.ceil(p.hunger)}%`}
-              barClass={p.hunger <= 25 ? 'bg-red-500' : 'bg-gradient-to-r from-lime-600 to-emerald-400'}
-              danger={p.hunger <= 25}
-            />
-            <VitalBar
-              icon={<Droplets className="w-3.5 h-3.5" />}
-              label="水分"
-              pct={p.thirst}
-              valueText={`${Math.ceil(p.thirst)}%`}
-              barClass={p.thirst <= 25 ? 'bg-red-500' : 'bg-gradient-to-r from-blue-600 to-sky-400'}
-              danger={p.thirst <= 25}
-            />
-            <VitalBar
-              icon={<Thermometer className="w-3.5 h-3.5" />}
-              label="体温"
-              pct={p.bodyTemp}
-              valueText={`${Math.ceil(p.bodyTemp)}%`}
-              barClass={p.bodyTemp <= 35 ? 'bg-sky-400' : 'bg-gradient-to-r from-orange-600 to-amber-400'}
-              danger={p.bodyTemp <= 35}
+    <div className="pointer-events-none fixed inset-0 z-10">
+      {(world.mode === 'wasteland' || world.mode === 'city_escape') && world.legTotal > 0 && <LegProgress world={world} />}
+
+      {/* Clock — quiet engraved text, top-right */}
+      <div className="fixed top-4 right-5 text-right text-engraved">
+        <div className="font-mono text-[12px] text-parchment-dim">
+          第{world.dayCount}天 <span className="text-parchment">{getClockLabel(world)}</span>
+        </div>
+        <div className="text-[10.5px] text-ash tracking-wider mt-0.5">{getWeatherLabel(world)}</div>
+      </div>
+
+      {/* Hull integrity — appears only when the train is hurt and it matters */}
+      {showHull && (
+        <div className="fixed top-4 left-5 plate riveted anim-pop-in px-3.5 py-2.5 w-[200px]">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="flex items-center gap-1.5 text-[10px] tracking-[0.18em] text-ash">
+              <TrainFront className="w-3.5 h-3.5" /> 车壳
+            </span>
+            <span className={`font-mono text-[12px] ${hull.pct < 40 ? 'text-rust' : 'text-parchment'}`}>
+              {Math.round(hull.pct)}%
+            </span>
+          </div>
+          <div className="meter meter-ticks h-[6px]">
+            <div
+              className="meter-fill"
+              style={{
+                width: `${clampPct(hull.pct)}%`,
+                backgroundColor: hull.pct < 40 ? '#dc5f4f' : hull.pct < 70 ? '#d9a14f' : '#98a7b5',
+              }}
             />
           </div>
+          <div className="flex items-center justify-between mt-1.5 text-[10px] font-mono">
+            <span className="text-ash-dim">
+              车头 <span className={hull.locoPct < 40 ? 'text-rust' : 'text-parchment-dim'}>{Math.round(hull.locoPct)}%</span>
+            </span>
+            {hull.brokenPanels > 0 ? (
+              <span className="text-rust anim-heartbeat">破口 {hull.brokenPanels}</span>
+            ) : (
+              <span className="text-ash-dim">最薄 {Math.round(hull.worstPct)}%</span>
+            )}
+          </div>
+        </div>
+      )}
 
-          {/* Locomotive Boiler & Interactive Brass Throttle */}
-          <div className="brass-panel rounded-xl p-3 space-y-2">
-            <VitalBar
-              icon={<Flame className="w-3.5 h-3.5 text-orange-400" />}
-              label="锅炉"
-              pct={(world.boilerFuel / world.boilerMax) * 100}
-              valueText={`${world.boilerFuel.toFixed(1)}/${world.boilerMax}`}
-              barClass="bg-gradient-to-r from-orange-600 via-amber-500 to-yellow-300"
-              danger={world.boilerFuel <= 3}
-            />
-
-            {/* 4-Gear Interactive Brass Throttle Quadrant */}
-            <div className="grid grid-cols-4 gap-1 pt-0.5">
+      {/* Driving Strip — ONLY while standing at the locomotive lever */}
+      {world.throttleOpen && (
+        <div className="pointer-events-auto fixed top-5 left-1/2 -translate-x-1/2 plate-strong riveted anim-pop-in px-5 py-3 flex items-center gap-5">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[9.5px] tracking-[0.18em] text-ash-dim">拉杆档位</span>
+            <div className="flex items-center gap-1 p-0.5 rounded-md bg-black/40 border border-white/5">
               {([0, 1, 2, 3] as GearLevel[]).map((g) => {
                 const active = world.gear === g;
-                const lockedOverload = overloaded && g === 3;
+                const locked = overloaded && g === 3;
                 return (
                   <button
                     key={g}
-                    onClick={() => actions.onShiftGearTo(g)}
-                    disabled={lockedOverload}
-                    title={lockedOverload ? '超载锁定全速' : `切换至 ${GEAR_LABELS[g]} (Q/F)`}
-                    className={`py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer border ${
-                      active
-                        ? g === 3
-                          ? 'bg-red-500/30 border-red-400 text-red-200 shadow-[0_0_10px_rgba(239,68,68,0.4)]'
-                          : g > 0
-                            ? 'bg-amber-500/30 border-amber-300 text-amber-100 shadow-[0_0_10px_rgba(245,158,11,0.3)]'
-                            : 'bg-stone-700/90 border-stone-400 text-white'
-                        : 'bg-black/40 border-white/10 text-stone-400 hover:border-amber-400/50 hover:text-stone-200'
-                    } ${lockedOverload ? 'opacity-35 cursor-not-allowed' : ''}`}
+                    disabled={locked}
+                    onClick={() => actions.onSetThrottleGear(g)}
+                    data-active={active}
+                    className={`seg px-3 py-1 text-[11.5px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed ${
+                      active && g === 3 ? '!text-[#ffb4a8] !border-rust/80 !bg-rust/15' : ''
+                    }`}
                   >
                     {GEAR_LABELS[g]}
                   </button>
                 );
               })}
             </div>
-
-            {/* Traction & Carriages Footer */}
-            <div className="flex items-center justify-between text-[11px] pt-0.5 text-stone-300">
-              <span className={`inline-flex items-center gap-1 font-mono tabular-nums ${overloaded ? 'text-red-400 font-bold' : 'text-emerald-300'}`}>
-                <Scale className="w-3 h-3" />
-                {weight}/{traction}t {overloaded && '超载'}
-              </span>
-              <span className="inline-flex items-center gap-1 font-mono tabular-nums text-stone-300">
-                <TrainFront className="w-3 h-3 text-amber-400" />
-                {world.flatbeds.length}节 · {Math.round(world.trainSpeed)}速
-              </span>
-            </div>
           </div>
-
-          {/* Active Guided Quest Card */}
-          {quest && (
-            <div className="brass-panel animate-quest-glow rounded-xl p-3">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-300">
-                  <Compass className="w-3.5 h-3.5" />
-                  {quest.title}
-                </span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200">
-                  {quest.idx}/{quest.total}
-                </span>
-              </div>
-              <p className="text-[11px] leading-relaxed text-stone-300/90 mb-1.5">{quest.desc}</p>
-              <div className="text-[11px] text-emerald-300 font-medium">
-                进度：<span className="font-mono">{quest.progress}</span>
-              </div>
+          <div className="w-px self-stretch bg-gradient-to-b from-transparent via-brass/25 to-transparent" />
+          <Readout
+            label="蓝火"
+            tone={fuelLow ? 'text-rust' : 'text-rune'}
+            value={
+              <>
+                {world.boilerFuel.toFixed(1)}
+                <span className="text-ash-dim">/{world.boilerMax}</span>
+              </>
+            }
+          >
+            <div className="meter h-[3px] w-full">
+              <div className="meter-fill" style={{ width: `${clampPct(fuelPct)}%`, backgroundColor: fuelLow ? '#dc5f4f' : '#84c8ff' }} />
             </div>
+          </Readout>
+          <Readout label="炉压" tone={pressureHot ? 'text-rust font-bold' : 'text-parchment'} value={`${Math.round(world.boilerPressure)}%`}>
+            <div className="meter h-[3px] w-full">
+              <div
+                className="meter-fill"
+                style={{ width: `${clampPct(world.boilerPressure)}%`, backgroundColor: pressureHot ? '#dc5f4f' : '#c9954d' }}
+              />
+            </div>
+          </Readout>
+          <Readout
+            label="载重"
+            tone={overloaded ? 'text-rust font-bold' : 'text-parchment'}
+            value={
+              <>
+                {weight}
+                <span className="text-ash-dim">/{traction}t</span>
+              </>
+            }
+          />
+          {world.mode === 'wasteland' && (
+            <Readout label="距下站" tone="text-brass-hi" value={`${Math.max(0, Math.round(world.legTotal - world.legDistance))}m`} />
+          )}
+          {world.mode === 'station' && (
+            <button onClick={actions.onToggleRoute} title={describeSupplyForecast(world)} className="btn-primary px-3 py-1.5 text-[11.5px]">
+              <MapIcon className="w-3.5 h-3.5" />
+              {world.selectedRoute ? `驶往${ZONE_META[world.selectedRoute.zone].name}` : '选定下一站'}
+            </button>
           )}
         </div>
+      )}
 
-        {/* TOP-CENTER: Danger Zone Telemetry + Journey Progress */}
-        <div className="pointer-events-auto flex flex-col items-center max-w-[365px] w-full">
-          <div className="brass-panel rounded-xl px-4 py-2.5 w-full text-center">
-            <div className="flex flex-wrap items-center justify-center gap-1.5 mb-1.5">
-              <span
-                className="px-2 py-0.5 rounded-md text-[11px] font-bold border"
-                style={{ borderColor: zm.color, color: zm.color, backgroundColor: `${zm.color}18` }}
+      {/* Loot feed — bottom-left */}
+      {world.lootFeed.length > 0 && (
+        <div className="fixed left-5 bottom-5 flex flex-col gap-1 items-start">
+          {world.lootFeed.map((lf) => {
+            const meta = ITEM_META[lf.key];
+            const opacity = Math.min(1, lf.timer * 0.9);
+            return (
+              <div
+                key={lf.key}
+                style={{ opacity, borderLeftColor: meta.color }}
+                className="anim-panel-in pl-2 pr-2.5 py-[3px] rounded-[5px] bg-[linear-gradient(90deg,rgb(10_9_8/0.85),rgb(10_9_8/0.5))] border-l-2 text-[11.5px] text-parchment flex items-center gap-2 backdrop-blur-sm"
               >
-                {zoneTitle}
-              </span>
-              <span className="px-2 py-0.5 rounded-md text-[11px] bg-black/45 border border-white/10 text-stone-200 font-mono tabular-nums">
-                第{world.dayCount}天 {getClockLabel(world)} · {getDayPhaseLabel(world)}
-              </span>
-              <span
-                className={`px-2 py-0.5 rounded-md text-[11px] border ${
-                  world.weather !== 'clear'
-                    ? 'bg-red-500/20 border-red-400/60 text-red-200'
-                    : 'bg-black/45 border-white/10 text-stone-300'
-                }`}
-              >
-                {getWeatherLabel(world)}
+                <span>{meta.short}</span>
+                <span className="font-mono text-brass-hi font-semibold">+{lf.count}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Bottom-centre stack: build palette · vitals · hotbar */}
+      <div
+        className="fixed bottom-4 -translate-x-1/2 flex flex-col items-center gap-2 transition-[left] duration-300 ease-out"
+        style={{ left: sidebarDocked ? `calc((100vw - ${world.openFacilityUid ? 650 : 540}px) / 2)` : '50%' }}
+      >
+        {world.buildMode && (
+          <div className="pointer-events-auto plate-strong anim-pop-in w-[640px] max-w-[calc(100vw-40px)] overflow-hidden">
+            {/* Header: category tabs + weight preview */}
+            <div className="plate-head flex items-center gap-1 pl-2 pr-4 py-1.5">
+              {BUILD_CATEGORIES.map((c) => {
+                const active = c.id === cat.id;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setBuildCat(c.id)}
+                    className={`relative inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-semibold cursor-pointer transition-colors ${
+                      active ? 'text-brass-hi' : 'text-ash hover:text-parchment'
+                    }`}
+                  >
+                    {c.icon}
+                    {c.label}
+                    {active && (
+                      <span className="absolute left-2 right-2 -bottom-[7px] h-[2px] rounded-full bg-brass-hi shadow-[0_0_8px_rgb(237_196_124/0.7)]" />
+                    )}
+                  </button>
+                );
+              })}
+              <span className={`ml-auto font-mono text-[11px] ${nextWeight > traction ? 'text-rust' : 'text-ash'}`}>
+                载重 {weight} → <span className={nextWeight > traction ? 'text-rust' : 'text-parchment'}>{nextWeight}</span> / {traction}t
               </span>
             </div>
-
-            {world.mode === 'city_escape' ? (
-              <div>
-                <div className="flex items-center justify-between text-xs font-bold text-orange-300">
-                  <span>{world.stationStreamed ? '🏁 正在驶入流放之城站台' : '🔥 沿铁道驶离陷落大城'}</span>
-                  <span className="font-mono tabular-nums text-amber-200/90">
-                    距站台 {Math.max(0, Math.round(world.stationStreamed ? world.stationAnchorX / 18 : world.legTotal - world.legDistance))}m
-                  </span>
-                </div>
-                <div className="text-[11px] text-stone-400 mt-1">
-                  {world.stationStreamed
-                    ? '已驶出城区大门 · 站台与流放之城正进入视野，即将平稳停靠'
-                    : '暂未遭遇怪物 · 熟悉车厢并可取下车头提灯，穿过城门即无缝驶入流放之地'}
-                </div>
-              </div>
-            ) : world.mode === 'station' ? (
-              <div>
-                <div className="text-sm font-bold text-amber-200 tracking-wide">
-                  📍 {world.stationName}
-                </div>
-                <div className="text-[11px] text-stone-300/90 mt-0.5">
-                  {selRoute ? (
-                    <>
-                      已选下站：<b className="text-amber-200">{selRoute.stationName}</b> ({selRoute.distance}m · 常速约耗油{' '}
-                      <b className={totalFuelNow < estCruise ? 'text-red-400' : 'text-emerald-300'}>~{estCruise}</b>，现存总油{' '}
-                      <span className="font-mono">{totalFuelNow}</span>)
-                    </>
-                  ) : (
-                    <span className="text-amber-300/90">尚未选定下一站 · 点击右侧【选站】或在车头控制台按 E</span>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div>
-                <div className="flex items-center justify-between text-xs font-bold text-stone-100">
-                  <span>{world.stationStreamed ? `🏁 驶入 ${selRoute?.stationName ?? '目标站'} 外围城区` : `🚂 铁道里程 · 开往 ${selRoute?.stationName ?? '下一站'}`}</span>
-                  <span className="font-mono tabular-nums" style={{ color: zm.color }}>
-                    距站台 {Math.max(0, Math.round(world.stationStreamed ? world.stationAnchorX / 18 : world.legTotal - world.legDistance))}m
-                  </span>
-                </div>
-                <div className={`text-[11px] mt-1 ${world.trainSpeed < 10 ? 'text-red-300 font-semibold' : 'text-stone-400'}`}>
-                  {world.trainSpeed < 10
-                    ? '⚠ 荒野停车极危！请速修断轨并拉杆发车'
-                    : world.stationStreamed
-                      ? '前方站台已进入视野 · 列车将平稳减速进站停靠'
-                      : '行驶中：作物照长 · 熔炉照烧 · 全速更快但油耗大增'}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* TOP-RIGHT: Resources + Action Toolbar */}
-        <div className="pointer-events-auto flex flex-col items-end gap-2 max-w-[490px]">
-          <div
-            className="brass-panel rounded-xl px-2 py-1.5 flex flex-wrap justify-end gap-1"
-            title="已自动合并统计背包与车上所有储物箱物资"
-          >
-            {[
-              { icon: '⛽', label: '油', val: cFuel, warn: cFuel <= 2 },
-              { icon: '🪵', label: '木', val: cWood },
-              { icon: '⚙', label: '废', val: cScrap },
-              { icon: '🔩', label: '零', val: cParts },
-              { icon: '🔗', label: '钩', val: cCoupler },
-              { icon: '💧', label: '水', val: cWater, warn: cWater <= 2 },
-              { icon: '🥖', label: '粮', val: cFood },
-              { icon: '💥', label: '弹', val: cAmmo },
-              { icon: '🛤', label: '轨', val: cRails, warn: cRails <= 0 },
-            ].map((item) => (
-              <span
-                key={item.label}
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-mono tabular-nums border ${
-                  item.warn
-                    ? 'bg-red-950/70 border-red-500/70 text-red-200'
-                    : 'bg-black/45 border-white/10 text-stone-200'
-                }`}
-              >
-                <span>{item.icon}</span>
-                <span>{item.val}</span>
-              </span>
-            ))}
-            {cMagic > 0 && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono bg-purple-950/70 border border-purple-400/60 text-purple-200">
-                <Sparkles className="w-3 h-3" /> {cMagic}
-              </span>
-            )}
-            {cRelic > 0 && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono bg-amber-950/70 border border-amber-400/70 text-amber-200">
-                🏺 {cRelic}
-              </span>
-            )}
-            {world.darkThreatLevel > 0.05 && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-red-600/80 border border-red-300 text-white animate-pulse">
-                <AlertTriangle className="w-3 h-3" /> 无灯暗袭!
-              </span>
-            )}
-          </div>
-
-          <div className="flex flex-nowrap justify-end gap-1">
-            {world.mode === 'station' && (
-              <button
-                onClick={actions.onToggleRoute}
-                className={`${
-                  !selRoute ? 'brass-btn-primary animate-pulse font-bold' : 'brass-btn text-amber-200'
-                } inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] whitespace-nowrap cursor-pointer`}
-              >
-                <MapIcon className="w-3.5 h-3.5" />
-                选站
-              </button>
-            )}
-            <button
-              onClick={actions.onToggleLight}
-              className={`brass-btn inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] whitespace-nowrap cursor-pointer ${
-                lanternActive ? 'border-amber-300 text-amber-200' : 'text-stone-300'
-              }`}
-              title="切换手提灯 (L)"
-            >
-              <Flashlight className="w-3.5 h-3.5" />
-              {world.lanternHolder === 'train' ? '在车头' : lanternActive ? '亮' : '灭'}
-            </button>
-            <button
-              onClick={actions.onToggleBuild}
-              className={`brass-btn inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] whitespace-nowrap cursor-pointer ${
-                world.buildMode ? 'border-amber-300 bg-amber-500/25 text-amber-100' : 'text-stone-200'
-              }`}
-            >
-              <Hammer className="w-3.5 h-3.5" />
-              建造(B)
-            </button>
-            <button
-              onClick={actions.onToggleBag}
-              className="brass-btn inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] whitespace-nowrap text-stone-200 cursor-pointer"
-              title={`网格行囊 Lv.${world.backpackLevel} (${bagUsed}/${bagCap}格) · 点击或按 I 打开`}
-            >
-              <Backpack className="w-3.5 h-3.5" />
-              行囊({bagUsed}/{bagCap}){chestCount > 0 ? `+${chestCount}` : ''}
-            </button>
-            <button
-              onClick={actions.onToggleCraft}
-              className="brass-btn inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] whitespace-nowrap text-stone-200 cursor-pointer"
-            >
-              <Wrench className="w-3.5 h-3.5" />
-              合成(Tab)
-            </button>
-            <button
-              onClick={actions.onResetZoom}
-              className="brass-btn inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-mono whitespace-nowrap text-stone-300 cursor-pointer"
-              title="鼠标滚轮缩放视野 · 点击或按 V 重置 100%"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-              {zoomPct}%
-            </button>
-            <button
-              onClick={actions.onToggleHelp}
-              className="brass-btn p-1.5 rounded-lg text-stone-300 cursor-pointer"
-              title="操作指南 (H)"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={actions.onToggleMute}
-              className="brass-btn p-1.5 rounded-lg text-stone-300 cursor-pointer"
-              title={muted ? '开启音效' : '静音'}
-            >
-              {muted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5" />}
-            </button>
-            <button
-              onClick={actions.onRestart}
-              className="brass-btn p-1.5 rounded-lg text-stone-300 cursor-pointer"
-              title="重新开始"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* BOTTOM BAR: Build Drawer + 6-Slot Hotbar */}
-      <div className="pointer-events-auto flex flex-col items-center gap-2">
-        {showBuildBar && (
-          <div className="brass-panel-strong rounded-2xl p-2.5 max-w-[94vw] w-fit">
-            <div className="flex flex-wrap justify-center gap-1.5">
-              {BUILD_ORDER.map((bId) => {
+            {/* One row of uniform cards — never wraps unevenly */}
+            <div className="grid grid-cols-4 gap-2 p-2.5">
+              {cat.items.map((bId) => {
                 const def = BUILDINGS[bId];
                 const unlocked = !def.requiresWorkbench || wb;
                 const afford = canAffordCost(world, def.cost);
-                const ok = unlocked && afford;
                 const active = world.selectedBuild === bId;
                 return (
                   <button
                     key={bId}
                     onClick={() => actions.onSelectBuild(bId)}
-                    title={def.desc}
-                    className={`px-2.5 py-1.5 rounded-lg text-left transition-all cursor-pointer border ${
-                      active
-                        ? 'bg-amber-500/25 border-amber-300 shadow-[0_0_12px_rgba(255,214,112,0.28)]'
-                        : 'bg-black/45 border-white/10 hover:border-amber-400/45'
-                    } ${ok ? '' : 'opacity-45'}`}
+                    data-active={active}
+                    title={`${def.name}\n${def.desc}`}
+                    className={`seg h-[56px] px-2.5 py-1.5 text-left flex flex-col justify-between ${unlocked && afford ? '' : 'opacity-50'}`}
                   >
-                    <div className="flex items-center justify-between gap-2 text-xs font-bold text-stone-100">
-                      <span>{def.short}</span>
-                      <span className="text-[10px] font-mono text-stone-400">{def.weight}t</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-4 h-4 rounded-[3px] shrink-0"
+                        style={{ background: `linear-gradient(135deg, ${def.color}, ${def.color}88)`, boxShadow: 'inset 0 1px 0 rgb(255 255 255 / 0.25)' }}
+                      />
+                      <span className="text-[12px] font-semibold text-parchment truncate">{def.short}</span>
+                      <span className="ml-auto text-[9.5px] font-mono text-ash-dim">{def.weight}t</span>
                     </div>
-                    <div className="text-[10px] text-amber-200/80 mt-0.5">
-                      {!unlocked ? '需工作台' : formatCostShort(def.cost)}
+                    <div className="flex flex-wrap gap-x-2 text-[10px] font-mono leading-tight">
+                      {!unlocked ? (
+                        <span className="flex items-center gap-1 text-rust/85">
+                          <Lock className="w-3 h-3" /> 需工作台
+                        </span>
+                      ) : (
+                        Object.entries(def.cost).map(([k, v]) => {
+                          const enough = getItemCount(world, k as ResourceKey) >= (v ?? 0);
+                          return (
+                            <span key={k} className={enough ? 'text-brass/90' : 'text-rust/80'}>
+                              {ITEM_META[k as ResourceKey].short}
+                              {v}
+                            </span>
+                          );
+                        })
+                      )}
                     </div>
                   </button>
                 );
               })}
+              {Array.from({ length: Math.max(0, 4 - cat.items.length) }).map((_, i) => (
+                <div key={`pad${i}`} className="h-[56px] rounded-[5px] border border-dashed border-white/[0.05]" />
+              ))}
             </div>
-            <div className="mt-2 pt-1.5 border-t border-white/10 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-stone-300">
-              <span>
-                当前蓝图：<b className="text-amber-300">{selBuildDef.name}</b> — {selBuildDef.desc}
+            <div className="border-t border-white/5 px-4 py-1.5 bg-black/20 flex items-center justify-between gap-4">
+              <span className="text-[11px] text-parchment-dim truncate">
+                <b className="text-brass-hi font-semibold">{selBuildDef.name}</b>
+                <span className="text-ash mx-1.5">—</span>
+                {selBuildDef.desc}
               </span>
-              <span className={`font-mono ${nextWeightIfPlaced > traction ? 'text-red-400 font-bold' : 'text-emerald-300'}`}>
-                放置后载重 {nextWeightIfPlaced}/{traction}t{nextWeightIfPlaced > traction ? ' (超载!)' : ''}
-              </span>
-              <span className="text-stone-400">左键建造 · 右键拆除返料</span>
+              <span className="text-[10px] text-ash-dim shrink-0">左键放置 · 右键拆除 · B 退出</span>
             </div>
           </div>
         )}
 
-        {/* 6-Slot Tactile Hotbar */}
-        <div className="brass-panel rounded-2xl p-1.5 flex items-center gap-1.5">
-          {hotbarItems.map((item, idx) => {
-            const active = (world.hotbar === idx && !world.buildMode) || (idx === 5 && world.buildMode);
+        {/* Vitals — centred (folds away while building unless something needs attention) */}
+        {!(world.buildMode && vitalsHealthy) && (
+        <div
+          className={`plate px-3.5 py-1.5 flex items-center gap-4 transition-opacity duration-700 ${
+            showVitals ? 'opacity-100' : 'opacity-[0.22]'
+          }`}
+        >
+          <Vital icon={<Heart className="w-3.5 h-3.5" />} label="生命" pct={(p.hp / p.maxHp) * 100} color="#d2584d" danger={p.hp <= p.maxHp * 0.3} />
+          <Vital icon={<Utensils className="w-3.5 h-3.5" />} label="饱食" pct={p.hunger} color="#d9a14f" danger={p.hunger <= 25} />
+          <Vital icon={<Droplets className="w-3.5 h-3.5" />} label="水分" pct={p.thirst} color="#6fb2e0" danger={p.thirst <= 25} />
+          <Vital
+            icon={<Thermometer className="w-3.5 h-3.5" />}
+            label="体温"
+            pct={p.bodyTemp}
+            color={p.bodyTemp <= 35 ? '#9fd6ff' : '#e08a4a'}
+            danger={p.bodyTemp <= 35}
+          />
+          {p.sickTimer > 0 && (
+            <span className="chip chip-ok !text-[10px]" title="绷带或药剂治疗">
+              <Activity className="w-3 h-3" /> 病症
+            </span>
+          )}
+        </div>
+        )}
+
+        {/* Hotbar: 6 bindable sockets + separate build toggle */}
+        <div className="pointer-events-auto plate riveted px-2 py-1.5 flex items-center gap-1.5">
+          {bindings.map((b, idx) => {
+            const v = describeBinding(world, b);
+            const active = world.hotbar === idx && !world.buildMode;
+            const isDrop = dropTarget === idx;
             return (
               <button
                 key={idx}
+                draggable={!!b}
+                onDragStart={(e) => startDrag(e, { src: 'hotbar', idx })}
+                onDragOver={(e) => {
+                  if (!acceptsDrag(e)) return;
+                  e.preventDefault();
+                  if (dropTarget !== idx) setDropTarget(idx);
+                }}
+                onDragLeave={() => setDropTarget((t) => (t === idx ? null : t))}
+                onDrop={(e) => onSlotDrop(e, idx)}
                 onClick={() => actions.onSelectHotbar(idx as HotbarSlot)}
-                className={`relative w-[78px] h-[64px] rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer border ${
-                  active
-                    ? 'bg-gradient-to-b from-amber-500/30 to-amber-700/20 border-amber-300 -translate-y-0.5 shadow-[0_6px_18px_rgba(217,147,60,0.35)]'
-                    : 'bg-black/45 border-white/10 hover:border-amber-400/40'
-                }`}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (b && b.kind !== 'tool') actions.onClearHotbar(idx);
+                }}
+                title={`${v.title}${b && b.kind !== 'tool' ? '\n右键清空 · 拖动换位' : ''}`}
+                className={`group relative w-[58px] h-[56px] rounded-[7px] flex flex-col items-center justify-center gap-[3px] cursor-pointer border transition-all duration-150 ${
+                  isDrop
+                    ? 'border-rune/80 bg-rune/10 shadow-[0_0_14px_-3px_rgb(132_200_255/0.7)]'
+                    : active
+                      ? 'border-brass-hi/80 text-brass-hi bg-[radial-gradient(ellipse_at_50%_30%,rgb(237_196_124/0.22),rgb(201_149_77/0.05)_70%)] shadow-[inset_0_0_0_1px_rgb(0_0_0/0.5),0_0_16px_-4px_rgb(237_196_124/0.5)] -translate-y-0.5'
+                      : v.empty
+                        ? 'border-dashed border-white/[0.08] text-ash-dim bg-black/25 hover:border-brass/30'
+                        : 'border-white/[0.06] text-parchment-dim bg-black/35 shadow-[inset_0_1px_3px_rgb(0_0_0/0.6)] hover:border-brass/40 hover:text-parchment'
+                } ${world.buildMode ? 'opacity-45' : ''}`}
               >
-                <span className="absolute top-1 left-1.5 text-[10px] font-mono text-stone-400">
+                <span className={`absolute top-[3px] left-[5px] text-[9px] font-mono ${active ? 'text-brass-hi/80' : 'text-ash-dim'}`}>
                   {idx + 1}
                 </span>
-                {item.sub && (
-                  <span className="absolute top-1 right-1.5 text-[9px] font-mono text-amber-300">
-                    {item.sub}
+                {v.sub && <span className="absolute top-[3px] right-[5px] text-[8.5px] text-brass/70">{v.sub}</span>}
+                {v.empty ? (
+                  <span className="w-[18px] h-[18px] rounded-full border border-dashed border-white/10" />
+                ) : (
+                  <>
+                    <span className="mt-1.5 flex items-center justify-center h-[22px]">{v.icon}</span>
+                    <span className="text-[10px] leading-none tracking-wide max-w-[52px] truncate">{v.name}</span>
+                  </>
+                )}
+                {v.count !== undefined && (
+                  <span
+                    className={`absolute bottom-[3px] right-[5px] text-[10px] font-mono font-semibold ${
+                      v.count === 0 ? 'text-rust/70' : 'text-brass-hi'
+                    }`}
+                  >
+                    {v.count}
                   </span>
                 )}
-                <span className="text-xl leading-none mb-0.5">{item.icon}</span>
-                <span className="text-[11px] font-medium text-stone-200">{item.name}</span>
-                {item.cnt !== undefined && (
-                  <span className="absolute bottom-1 right-1.5 text-[11px] font-mono font-bold text-amber-300">
-                    {item.cnt}
-                  </span>
+                {active && (
+                  <span className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 w-5 h-[2px] rounded-full bg-brass-hi shadow-[0_0_8px_rgb(237_196_124/0.9)]" />
                 )}
               </button>
             );
           })}
+
+          <span className="w-px self-stretch my-1 mx-0.5 bg-gradient-to-b from-transparent via-brass/30 to-transparent" />
+
+          <button
+            onClick={actions.onToggleLantern}
+            data-active={world.lanternHolder === 'player'}
+            title={world.lanternHolder === 'player' ? '放下手提灯 (F)' : '拾起手提灯 (F，需走到灯旁)'}
+            className="seg relative w-[50px] h-[56px] flex flex-col items-center justify-center gap-[3px]"
+          >
+            <span className="absolute top-[3px] left-[5px] text-[9px] font-mono text-ash-dim">F</span>
+            <Lamp
+              className={`w-[18px] h-[18px] mt-1.5 ${
+                world.lanternHolder === 'player' ? 'text-[#ffd98a] drop-shadow-[0_0_6px_rgb(255_200_110/0.7)]' : 'text-ash-dim'
+              }`}
+            />
+            <span className="text-[10px] leading-none">{world.lanternHolder === 'player' ? '提灯' : '已放下'}</span>
+          </button>
+
+          <button
+            onClick={actions.onToggleBuild}
+            data-active={world.buildMode}
+            title="建造模式 (B)"
+            className="seg relative w-[50px] h-[56px] flex flex-col items-center justify-center gap-[3px]"
+          >
+            <span className="absolute top-[3px] left-[5px] text-[9px] font-mono text-ash-dim">B</span>
+            <Hammer className="w-[18px] h-[18px] mt-1.5" />
+            <span className="text-[10px] leading-none">建造</span>
+          </button>
         </div>
       </div>
     </div>

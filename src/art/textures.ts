@@ -41,29 +41,37 @@ function bakeGroundTile(zone: ZoneKind | 'snow'): HTMLCanvasElement {
       accent: '#5c3120',
       cracks: 'rgba(10,8,9,0.55)',
     },
-    exile: {
-      base: '#34291f',
-      mid: '#413224',
-      dark: '#251c14',
-      light: '#574431',
-      accent: '#54502f',
-      cracks: 'rgba(26,18,12,0.45)',
+    rust_plains: {
+      base: '#36271d',
+      mid: '#443022',
+      dark: '#261b13',
+      light: '#5c412e',
+      accent: '#7a512b',
+      cracks: 'rgba(26,16,10,0.45)',
     },
-    monster: {
-      base: '#2d1c19',
-      mid: '#3b231e',
-      dark: '#1f1210',
+    monster_wastes: {
+      base: '#2c1c19',
+      mid: '#3a241f',
+      dark: '#1e1210',
       light: '#523029',
-      accent: '#7a2b20',
+      accent: '#783226',
       cracks: 'rgba(18,8,8,0.55)',
     },
-    fantasy: {
-      base: '#1d172e',
-      mid: '#281f42',
-      dark: '#130e20',
-      light: '#3e3066',
-      accent: '#9d4edd',
-      cracks: 'rgba(165,105,255,0.22)',
+    ivy_city: {
+      base: '#1b2620',
+      mid: '#23332a',
+      dark: '#121a16',
+      light: '#354f40',
+      accent: '#56a874',
+      cracks: 'rgba(85, 195, 130, 0.24)',
+    },
+    sinking_belt: {
+      base: '#1f2329',
+      mid: '#292e36',
+      dark: '#14171c',
+      light: '#3e4652',
+      accent: '#5a6b7d',
+      cracks: 'rgba(8, 10, 14, 0.72)',
     },
     old_city: {
       base: '#262c34',
@@ -87,7 +95,6 @@ function bakeGroundTile(zone: ZoneKind | 'snow'): HTMLCanvasElement {
   ctx.fillStyle = t.base;
   ctx.fillRect(0, 0, S, S);
 
-  // Soft painterly terrain patches (tiled seamlessly by drawing wrapped copies)
   for (let i = 0; i < 48; i++) {
     const x = seeded(i * 3.1 + 1) * S;
     const y = seeded(i * 5.7 + 2) * S;
@@ -106,9 +113,7 @@ function bakeGroundTile(zone: ZoneKind | 'snow'): HTMLCanvasElement {
   }
   ctx.globalAlpha = 1;
 
-  // Zone-specific structural motifs
   if (zone === 'old_city') {
-    // Ancient worn flagstones
     const step = 64;
     ctx.strokeStyle = t.cracks;
     ctx.lineWidth = 2;
@@ -122,52 +127,65 @@ function bakeGroundTile(zone: ZoneKind | 'snow'): HTMLCanvasElement {
         ctx.fillRect(bx + 4, by + 4, step - 8, 5);
       }
     }
-  } else {
-    // Organic ground fractures / ley veins
+  } else if (zone === 'rust_plains') {
+    // Half-buried corroded giant gear teeth arcs (W3)
+    ctx.strokeStyle = 'rgba(130, 88, 48, 0.25)';
+    ctx.lineWidth = 6;
+    ctx.setLineDash([12, 10]);
+    ctx.beginPath();
+    ctx.arc(190, 180, 74, 0.3, 2.3);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  } else if (zone === 'ivy_city') {
+    // Flagstones overgrown with creeping luminous vines (W4)
+    ctx.strokeStyle = 'rgba(10, 16, 12, 0.45)';
+    ctx.lineWidth = 1.5;
+    for (let r = 0; r < 4; r++) {
+      for (let col = 0; col < 4; col++) {
+        ctx.strokeRect(col * 64 + 2, r * 64 + 2, 60, 60);
+      }
+    }
     ctx.strokeStyle = t.cracks;
-    ctx.lineWidth = zone === 'fantasy' ? 1.8 : 1.3;
-    for (let i = 0; i < 12; i++) {
+    ctx.lineWidth = 2.2;
+    for (let i = 0; i < 10; i++) {
       const x = seeded(i * 19.3) * S;
       const y = seeded(i * 23.7) * S;
       ctx.beginPath();
       ctx.moveTo(x, y);
-      ctx.lineTo(x + (seeded(i * 29) - 0.5) * 44, y + (seeded(i * 31) - 0.5) * 38);
-      ctx.lineTo(x + (seeded(i * 37) - 0.5) * 72, y + (seeded(i * 41) - 0.5) * 62);
+      ctx.quadraticCurveTo(x + 28, y - 16, x + 52, y + 22);
+      ctx.stroke();
+    }
+  } else {
+    // Fractures / deep rifts for sinking_belt & monster_wastes
+    ctx.strokeStyle = t.cracks;
+    ctx.lineWidth = zone === 'sinking_belt' ? 2.4 : 1.3;
+    for (let i = 0; i < 14; i++) {
+      const x = seeded(i * 19.3) * S;
+      const y = seeded(i * 23.7) * S;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (seeded(i * 29) - 0.5) * 48, y + (seeded(i * 31) - 0.5) * 42);
+      ctx.lineTo(x + (seeded(i * 37) - 0.5) * 76, y + (seeded(i * 41) - 0.5) * 64);
       ctx.stroke();
     }
   }
 
-  // Fine pebbles, ash flecks & dry grass tufts
-  for (let i = 0; i < 380; i++) {
+  for (let i = 0; i < 360; i++) {
     const x = seeded(i * 43.1 + 7) * S;
     const y = seeded(i * 59.3 + 11) * S;
     const r = 0.8 + seeded(i * 61.7) * 2.2;
     ctx.fillStyle = i % 14 === 0 ? t.accent : i % 3 === 0 ? t.light : t.dark;
-    ctx.globalAlpha = i % 14 === 0 ? 0.52 : 0.36;
+    ctx.globalAlpha = i % 14 === 0 ? 0.52 : 0.34;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Sparse dry scrub / glowing crystal specks
-  if (zone === 'exile' || zone === 'monster') {
-    ctx.strokeStyle = zone === 'exile' ? 'rgba(110, 102, 58, 0.52)' : 'rgba(115, 58, 42, 0.45)';
-    ctx.lineWidth = 1.4;
-    for (let i = 0; i < 14; i++) {
-      const gx = 12 + seeded(i * 83.1) * (S - 24);
-      const gy = 12 + seeded(i * 97.7) * (S - 24);
-      for (let b = -1; b <= 1; b++) {
-        ctx.beginPath();
-        ctx.moveTo(gx, gy);
-        ctx.lineTo(gx + b * 5 + (seeded(i + b) - 0.5) * 3, gy - 6 - seeded(i * 3 + b) * 4);
-        ctx.stroke();
-      }
-    }
-  } else if (zone === 'fantasy') {
-    for (let i = 0; i < 18; i++) {
+  if (zone === 'ivy_city') {
+    for (let i = 0; i < 16; i++) {
       const fx = seeded(i * 71.1) * S;
       const fy = seeded(i * 89.3) * S;
-      ctx.fillStyle = 'rgba(210, 145, 255, 0.48)';
+      ctx.fillStyle = 'rgba(130, 235, 175, 0.42)';
       ctx.beginPath();
       ctx.arc(fx, fy, 1.8, 0, Math.PI * 2);
       ctx.fill();
@@ -180,7 +198,6 @@ function bakeGroundTile(zone: ZoneKind | 'snow'): HTMLCanvasElement {
 
 function bakeBallastTile(): HTMLCanvasElement {
   const [c, ctx] = createCanvas(256, 224);
-  // Soft embankment bevel gradient top-to-bottom
   const g = ctx.createLinearGradient(0, 0, 0, 224);
   g.addColorStop(0, 'rgba(26, 22, 18, 0)');
   g.addColorStop(0.1, '#26211c');
@@ -192,7 +209,6 @@ function bakeBallastTile(): HTMLCanvasElement {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 256, 224);
 
-  // Crushed gravel stones
   for (let i = 0; i < 900; i++) {
     const x = seeded(i * 19.1) * 256;
     const y = 18 + seeded(i * 37.3) * 188;
@@ -218,29 +234,16 @@ function bakeWoodDeckTile(): HTMLCanvasElement {
     const tone = 68 + Math.floor(seeded(row * 17.3) * 18);
     ctx.fillStyle = `rgb(${tone + 18}, ${tone + 2}, ${tone - 16})`;
     ctx.fillRect(0, y + 1, 128, plankH - 2);
-
-    // Highlight edge
     ctx.fillStyle = 'rgba(255, 220, 175, 0.08)';
     ctx.fillRect(0, y + 1, 128, 1.5);
-
-    // Fine wood grain
     for (let g = 0; g < 6; g++) {
       ctx.fillStyle = g % 2 === 0 ? 'rgba(20, 12, 6, 0.14)' : 'rgba(200, 155, 100, 0.06)';
       ctx.fillRect(0, y + 2 + g * 2.1, 128, 1);
     }
-
-    // Plank seam
     ctx.fillStyle = '#1f160f';
     ctx.fillRect(0, y, 128, 1.5);
-
-    // Cross joint + rusted nails
     const jx = Math.floor(20 + seeded(row * 31.7) * 88);
     ctx.fillRect(jx, y, 1.5, plankH);
-    ctx.fillStyle = '#18130f';
-    ctx.fillRect(jx - 5, y + 3, 2, 2);
-    ctx.fillRect(jx - 5, y + plankH - 5, 2, 2);
-    ctx.fillRect(jx + 4, y + 3, 2, 2);
-    ctx.fillRect(jx + 4, y + plankH - 5, 2, 2);
   }
   return c;
 }
@@ -256,13 +259,6 @@ function bakeAsphaltTile(): HTMLCanvasElement {
     ctx.fillStyle = `rgb(${v},${v},${v + 2})`;
     ctx.fillRect(x, y, 2, 2);
   }
-  ctx.strokeStyle = 'rgba(12, 10, 11, 0.5)';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.moveTo(14, 24);
-  ctx.lineTo(52, 42);
-  ctx.lineTo(86, 36);
-  ctx.stroke();
   return c;
 }
 
@@ -278,10 +274,6 @@ function bakePlatformTile(): HTMLCanvasElement {
       ctx.fillStyle = 'rgba(255,255,255,0.03)';
       ctx.fillRect(x + 2, y + 2, 28, 3);
     }
-  }
-  for (let i = 0; i < 200; i++) {
-    ctx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.09)' : 'rgba(255,245,230,0.04)';
-    ctx.fillRect(seeded(i * 11.3) * 128, seeded(i * 23.1) * 128, 2, 2);
   }
   return c;
 }
@@ -300,8 +292,6 @@ function bakeMasonryTile(): HTMLCanvasElement {
       const v = 72 + Math.floor(seeded(r * 13 + col * 29) * 18);
       ctx.fillStyle = `rgb(${v + 6}, ${v}, ${v - 6})`;
       ctx.fillRect(bx + 1, by + 1, bw - 2, bh - 2);
-      ctx.fillStyle = 'rgba(255,240,220,0.08)';
-      ctx.fillRect(bx + 1, by + 1, bw - 2, 2);
     }
   }
   return c;
@@ -309,10 +299,8 @@ function bakeMasonryTile(): HTMLCanvasElement {
 
 function bakePreTiledRect(tile: HTMLCanvasElement, w: number, h: number): HTMLCanvasElement {
   const [c, ctx] = createCanvas(w, h);
-  const tw = tile.width;
-  const th = tile.height;
-  for (let y = 0; y < h; y += th) {
-    for (let x = 0; x < w; x += tw) {
+  for (let y = 0; y < h; y += tile.height) {
+    for (let x = 0; x < w; x += tile.width) {
       ctx.drawImage(tile, x, y);
     }
   }
@@ -325,9 +313,10 @@ export function getArtPatterns(): ArtPatterns {
   cachedPatterns = {
     ground: {
       fallen_city: bakeGroundTile('fallen_city'),
-      exile: bakeGroundTile('exile'),
-      monster: bakeGroundTile('monster'),
-      fantasy: bakeGroundTile('fantasy'),
+      rust_plains: bakeGroundTile('rust_plains'),
+      monster_wastes: bakeGroundTile('monster_wastes'),
+      ivy_city: bakeGroundTile('ivy_city'),
+      sinking_belt: bakeGroundTile('sinking_belt'),
       old_city: bakeGroundTile('old_city'),
       snow: bakeGroundTile('snow'),
     },
